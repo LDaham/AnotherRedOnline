@@ -1,0 +1,758 @@
+#===============================================================================
+# Another Red Online — guest-side visual mirror (camera flip)
+#
+# The simulation is CANONICAL on both peers (side0 = host, side1 = guest) so the
+# lockstep stays deterministic. The guest must SEE the battle from side1's seat:
+# their own Pokémon at the bottom (back sprite) and the host's at the top (front
+# sprite). This flips only the *presentation* when $arnet_view_flip is set
+# (BattleLauncher sets it true for the guest, around pbStartBattle).
+#
+# The engine has NO single "view" chokepoint — it derives "which side is mine?"
+# from `opposes?` / index parity in MANY places (sprites, data boxes, messages,
+# send-out choreography, move-animation mirroring). We CANNOT flip `opposes?`
+# itself: it is ONE method (Battle#opposes?(a,b=0)) shared with the deterministic
+# simulation (targeting, spread moves, speed order) — flipping it desyncs. So we
+# override each PRESENTATION site individually, all routed through ONE predicate:
+#
+#   ARNet.render_own?(index) -> should this battler render as the LOCAL/near side
+#   ARNet.pres_index(index)  -> the seat index used for position/parity presentation
+#
+# Everything here is display-only (strings, sprite choice, animation direction);
+# none of it is hashed into the turn checksum, so it can't affect determinism.
+#
+# DONE (verified in-game): pokemon back/front + position, HP-box side, message
+# perspective, move-animation mirror, HP-box slide direction, send-out direction.
+# trainer intro sprites: now gender-correct + local-perspective on both peers
+# (section 1b) — near seat = own back sprite (own gender), far seat = opponent's
+# front sprite (their gender). RESIDUAL GAP: the 5-frame throw-arm animation stays
+# bound to the canonical key (player_N=throw), so the guest's near-seat throw
+# motion is still slightly off; the static picture + orientation are correct.
+#===============================================================================
+module ARNet
+  def self.view_flip?; $arnet_view_flip ? true : false; end
+
+  # Trainer intro sprite files, local perspective, from the ACTUAL trainer types
+  # (exchanged in the handshake) rather than a hand-guessed gender->file map — the
+  # engine's own filename methods are the ground truth, so the sprite matches what
+  # each player really is (and respects the local player's outfit). Own side = the
+  # local player's BACK sprite; opponent = the peer's FRONT sprite.
+  def self.own_back_sprite_file
+    tt = $arnet_my_ttype || ($player && $player.trainer_type)
+    GameData::TrainerType.player_back_sprite_filename(tt)
+  end
+
+  def self.opp_front_sprite_file
+    tt  = $arnet_opp_ttype
+    sym = tt.is_a?(String) ? tt.to_sym : tt
+    sym = nil unless sym && (GameData::TrainerType.try_get(sym) rescue nil)
+    sym ||= ($player && $player.trainer_type)   # fallback: both peers are this game's players
+    GameData::TrainerType.front_sprite_filename(sym)
+  end
+
+  # Under the guest's flipped view, battler index N is presented in seat N^1.
+  def self.pres_index(i); $arnet_view_flip ? (i ^ 1) : i; end
+
+  # True if index `i` should render as the LOCAL/near side (bottom seat, back
+  # sprite, own data box, player-style send-out, no "opposing" text prefix).
+  # Engine-native convention: even index = near/player side.
+  def self.render_own?(i); pres_index(i).even?; end
+
+  # Presentation "is this battler on the FAR (opponent) seat, from the viewer?".
+  # Canonically this is Battler#opposes? (player-relative, side0=near); the guest's
+  # flipped view inverts it. Used by the Substitute-doll animations, which derive
+  # slide direction / front-vs-back doll from opposes? — display-only, so safe.
+  def self.pres_far?(battler); $arnet_view_flip ? !battler.opposes? : battler.opposes?; end
+
+  # Delegates everything to the real battler but reports a flipped `index`, so a
+  # data box (and its appear/disappear animation) built from it renders on the
+  # opposite side while still reading the correct HP/name/level/etc.
+  class MirrorBattler
+    def initialize(battler); @arnet_b = battler; end
+    def index;              @arnet_b.index ^ 1; end
+    def __real__;           @arnet_b; end
+    def is_a?(k);           @arnet_b.is_a?(k); end
+    def kind_of?(k);        @arnet_b.kind_of?(k); end
+    def instance_of?(k);    @arnet_b.instance_of?(k); end
+    def class;              @arnet_b.class; end
+    def ==(o);              @arnet_b == (o.is_a?(MirrorBattler) ? o.__real__ : o); end
+    def respond_to_missing?(m, inc = false); @arnet_b.respond_to?(m, inc); end
+    def method_missing(m, *a, &blk); @arnet_b.send(m, *a, &blk); end
+  end
+end
+
+if defined?(Battle::Scene)
+  class Battle::Scene
+    #--- 1) Positions: the single place every "where does index N sit?" resolves -
+    class << self
+      unless method_defined?(:arnet_orig_pbBattlerPosition) || respond_to?(:arnet_orig_pbBattlerPosition)
+        alias_method :arnet_orig_pbBattlerPosition, :pbBattlerPosition
+        alias_method :arnet_orig_pbTrainerPosition, :pbTrainerPosition
+      end
+      def pbBattlerPosition(index, sideSize = 1)
+        arnet_orig_pbBattlerPosition(ARNet.pres_index(index), sideSize)
+      end
+      def pbTrainerPosition(side, index = 0, sideSize = 1)
+        arnet_orig_pbTrainerPosition(ARNet.pres_index(side), index, sideSize)
+      end
+    end
+
+    #--- 1b) Trainer intro sprites: correct character + local perspective. Online
+    # battles show the LOCAL player's OWN trainer (back sprite) in the near seat and
+    # the OPPONENT's trainer (front sprite) in the far seat — on BOTH host and
+    # guest. We use the ACTUAL trainer types (the local $player's, and the peer's
+    # exchanged in the handshake) via the engine's own filename methods, so each
+    # sprite matches what that player really is (no gender guessing). The engine
+    # keys these sprites CANONICALLY (player_N thrown/faded as side0, trainer_N
+    # faded as side1), so we KEEP the key tied to the calling method but choose the
+    # sprite TYPE + bitmap from the FINAL on-screen seat (near vs far, already
+    # flipped by pbTrainerPosition), mirroring like every other element. Gated by
+    # $arnet_online_intro ([010]); cleared => offline, defer to the core verbatim.
+    # (The 5-frame throw-arm animation on the guest's near sprite is the residual
+    # trainer-intro gap; the static picture — character + orientation — is correct.)
+    unless method_defined?(:arnet_orig_pbCreateTrainerBackSprite)
+      alias_method :arnet_orig_pbCreateTrainerBackSprite,  :pbCreateTrainerBackSprite
+      alias_method :arnet_orig_pbCreateTrainerFrontSprite, :pbCreateTrainerFrontSprite
+    end
+
+    def pbCreateTrainerBackSprite(idxTrainer, trainerType, numTrainers = 1)
+      return arnet_orig_pbCreateTrainerBackSprite(idxTrainer, trainerType, numTrainers) unless $arnet_online_intro
+      arnet_build_trainer_sprite("player_#{idxTrainer + 1}", 0, idxTrainer, numTrainers)
+    end
+
+    def pbCreateTrainerFrontSprite(idxTrainer, trainerType, numTrainers = 1)
+      return arnet_orig_pbCreateTrainerFrontSprite(idxTrainer, trainerType, numTrainers) unless $arnet_online_intro
+      arnet_build_trainer_sprite("trainer_#{idxTrainer + 1}", 1, idxTrainer, numTrainers)
+    end
+
+    # key: engine-canonical sprite key (fade/throw target — keep it bound to the
+    # calling method). canonSide: 0 for the back method, 1 for the front method.
+    # We derive near/far from the flipped seat so it's right on host AND guest.
+    def arnet_build_trainer_sprite(key, canonSide, idxTrainer, numTrainers)
+      own  = ARNet.render_own?(canonSide)   # true => near/bottom seat (local player)
+      file = own ? ARNet.own_back_sprite_file : ARNet.opp_front_sprite_file
+      spriteX, spriteY = Battle::Scene.pbTrainerPosition(canonSide, idxTrainer, numTrainers)
+      trainer = pbAddSprite(key, spriteX, spriteY, file, @viewport)
+      return if !trainer.bitmap
+      if own
+        # near seat: back sprite (own gender), possibly a 5-frame throw sheet.
+        trainer.z = 80 + idxTrainer
+        if trainer.bitmap.width > trainer.bitmap.height * 2
+          trainer.src_rect.x     = 0
+          trainer.src_rect.width = trainer.bitmap.width / 5
+        end
+      else
+        # far seat: opponent's front sprite (their gender), static single frame.
+        trainer.z = 7 + idxTrainer
+      end
+      trainer.ox = trainer.src_rect.width / 2
+      trainer.oy = trainer.bitmap.height
+    end
+
+    #--- 6) Move animations: flip the user's parity fed to the anim picker so the
+    # OppMove/Move variant AND the left/right mirror match the guest's view. The
+    # real user/target sprites are untouched (looked up by their true index in
+    # pbAnimationCore), so only the animation's facing/side flips. ----------------
+    unless method_defined?(:arnet_orig_pbFindMoveAnimation)
+      alias_method :arnet_orig_pbFindMoveAnimation, :pbFindMoveAnimation
+      alias_method :arnet_orig_pbSendOutBattlers,   :pbSendOutBattlers
+    end
+    def pbFindMoveAnimation(moveID, idxUser, hitNum)
+      idxUser ^= 1 if $arnet_view_flip
+      arnet_orig_pbFindMoveAnimation(moveID, idxUser, hitNum)
+    end
+
+    #--- 7) Send-out choreography: which side throws the ball / where the mon
+    # appears from is chosen by @battle.opposes?(idx). We can't flip opposes?
+    # (sim), so we reimplement this leaf Scene method with the two presentation
+    # decisions inverted for the guest. (Trainer-throw hand may look off — that's
+    # the known trainer-sprite gap; ball/appear DIRECTION is what this fixes.) ----
+    def pbSendOutBattlers(sendOuts, startBattle = false)
+      return arnet_orig_pbSendOutBattlers(sendOuts, startBattle) unless $arnet_view_flip
+      return if sendOuts.length == 0
+      while inPartyAnimation?
+        pbUpdate
+      end
+      @briefMessage = false
+      # NOTE: do NOT flip the fade. PlayerFade hides partyBar_0 and TrainerFade
+      # hides partyBar_1; flipping it leaves the actually-sent side's lineup bar
+      # on screen forever. Keep it tied to the real side (only the per-battler
+      # send-out animation below is flipped, for correct appear direction).
+      if @battle.opposes?(sendOuts[0][0])
+        fadeAnim = Animation::TrainerFade.new(@sprites, @viewport, startBattle)
+      else
+        fadeAnim = Animation::PlayerFade.new(@sprites, @viewport, startBattle)
+      end
+      sendOutAnims = []
+      sendOuts.each_with_index do |b, i|
+        pkmn = @battle.battlers[b[0]].effects[PBEffects::Illusion] || b[1]
+        pbChangePokemon(b[0], pkmn)
+        pbRefresh
+        if !@battle.opposes?(b[0])   # flipped
+          sendOutAnim = Animation::PokeballTrainerSendOut.new(
+            @sprites, @viewport, @battle.pbGetOwnerIndexFromBattlerIndex(b[0]) + 1,
+            @battle.battlers[b[0]], startBattle, i
+          )
+        else
+          sendOutAnim = Animation::PokeballPlayerSendOut.new(
+            @sprites, @viewport, @battle.pbGetOwnerIndexFromBattlerIndex(b[0]) + 1,
+            @battle.battlers[b[0]], startBattle, i
+          )
+        end
+        dataBoxAnim = Animation::DataBoxAppear.new(@sprites, @viewport, b[0])
+        sendOutAnims.push([sendOutAnim, dataBoxAnim, false])
+      end
+      loop do
+        fadeAnim.update
+        sendOutAnims.each do |a|
+          next if a[2]
+          a[0].update
+          a[1].update if a[0].animDone?
+          a[2] = true if a[1].animDone?
+        end
+        pbUpdate
+        break if !inPartyAnimation? && sendOutAnims.none? { |a| !a[2] }
+      end
+      fadeAnim.dispose
+      sendOutAnims.each do |a|
+        a[0].dispose
+        a[1].dispose
+      end
+      sendOuts.each do |b|
+        next if !@battle.showAnims || !@battle.battlers[b[0]].shiny?
+        if Settings::SUPER_SHINY && @battle.battlers[b[0]].super_shiny?
+          pbCommonAnimation("SuperShiny", @battle.battlers[b[0]])
+        else
+          pbCommonAnimation("Shiny", @battle.battlers[b[0]])
+        end
+      end
+    end
+  end
+end
+
+#--- 2) Pokémon battler sprite: flip facing + the non-positional parity bits ----
+if defined?(Battle::Scene::BattlerSprite)
+  class Battle::Scene::BattlerSprite
+    unless method_defined?(:arnet_orig_setPokemonBitmap)
+      alias_method :arnet_orig_setPokemonBitmap, :setPokemonBitmap
+      alias_method :arnet_orig_pbSetPosition,    :pbSetPosition
+    end
+
+    # `back` arrives computed from the canonical side; invert it so the guest
+    # sees their own mon's back and the host's front.
+    def setPokemonBitmap(pkmn, battler, back = false)
+      back = !back if $arnet_view_flip
+      arnet_orig_setPokemonBitmap(pkmn, battler, back)
+    end
+
+    # Position comes from the (already-flipping) class method; only z-order and
+    # the front/back sprite metrics need the local parity flip.
+    def pbSetPosition
+      return arnet_orig_pbSetPosition unless $arnet_view_flip
+      return if !@_iconBitmap
+      pbSetOrigin
+      di = ARNet.pres_index(@index)
+      if di.even?
+        self.z = 50 + (5 * di / 2)
+      else
+        self.z = 50 - (5 * (di + 1) / 2)
+      end
+      p = Battle::Scene.pbBattlerPosition(@index, @sideSize)   # class method flips
+      @spriteX = p[0]
+      @spriteY = p[1]
+      if @substitute
+        side = di.even? ? 0 : 1
+        @spriteY += Settings::SUBSTITUTE_DOLL_METRICS[side]
+      else
+        @pkmn.species_data.apply_metrics_to_sprite(self, di)
+      end
+    end
+  end
+end
+
+#--- 3) Shadow sprite: facing/mirror/angle/metrics derive from @index parity ----
+if defined?(Battle::Scene::BattlerShadowSprite)
+  class Battle::Scene::BattlerShadowSprite
+    unless method_defined?(:arnet_orig_shadow_setPokemonBitmap)
+      alias_method :arnet_orig_shadow_setPokemonBitmap, :setPokemonBitmap
+    end
+    def setPokemonBitmap(pkmn, battler, sprite)
+      if $arnet_view_flip && @index
+        @index ^= 1
+        begin
+          arnet_orig_shadow_setPokemonBitmap(pkmn, battler, sprite)
+        ensure
+          @index ^= 1
+        end
+      else
+        arnet_orig_shadow_setPokemonBitmap(pkmn, battler, sprite)
+      end
+    end
+  end
+end
+
+#--- 4) Data boxes: flip the whole box by feeding it an index-flipped battler ---
+# This proxy also makes the appear/disappear slide direction (Section 8) correct,
+# since those read box.battler.index.
+if defined?(Battle::Scene::PokemonDataBox)
+  class Battle::Scene::PokemonDataBox
+    unless method_defined?(:arnet_orig_databox_initialize)
+      alias_method :arnet_orig_databox_initialize, :initialize
+    end
+    def initialize(battler, sideSize, viewport = nil)
+      battler = ARNet::MirrorBattler.new(battler) if $arnet_view_flip
+      arnet_orig_databox_initialize(battler, sideSize, viewport)
+    end
+  end
+end
+
+#--- 5) Message perspective: "The opposing X" is player-relative. DISPLAY strings
+# only (never hashed into the checksum), so safe to flip on the guest. ----------
+if defined?(Battle::Battler)
+  class Battle::Battler
+    unless method_defined?(:arnet_orig_pbThis)
+      alias_method :arnet_orig_pbThis,         :pbThis
+      alias_method :arnet_orig_pbTeam,         :pbTeam
+      alias_method :arnet_orig_pbOpposingTeam, :pbOpposingTeam
+    end
+    def pbThis(lowerCase = false)
+      return arnet_orig_pbThis(lowerCase) unless $arnet_view_flip
+      return name if ARNet.render_own?(index)
+      lowerCase ? _INTL("the opposing {1}", name) : _INTL("The opposing {1}", name)
+    end
+    def pbTeam(lowerCase = false)
+      return arnet_orig_pbTeam(lowerCase) unless $arnet_view_flip
+      return (lowerCase ? _INTL("your team") : _INTL("Your team")) if ARNet.render_own?(index)
+      lowerCase ? _INTL("the opposing team") : _INTL("The opposing team")
+    end
+    def pbOpposingTeam(lowerCase = false)
+      return arnet_orig_pbOpposingTeam(lowerCase) unless $arnet_view_flip
+      return (lowerCase ? _INTL("the opposing team") : _INTL("The opposing team")) if ARNet.render_own?(index)
+      lowerCase ? _INTL("your team") : _INTL("Your team")
+    end
+  end
+end
+
+if defined?(Battle)
+  class Battle
+    unless method_defined?(:arnet_orig_pbThisEx)
+      alias_method :arnet_orig_pbThisEx,           :pbThisEx
+      alias_method :arnet_orig_pbMessagesOnReplace, :pbMessagesOnReplace
+      alias_method :arnet_orig_pbMessageOnRecall,   :pbMessageOnRecall
+    end
+    def pbThisEx(idxBattler, idxParty)
+      return arnet_orig_pbThisEx(idxBattler, idxParty) unless $arnet_view_flip
+      party = pbParty(idxBattler)
+      return party[idxParty].name if ARNet.render_own?(idxBattler)
+      _INTL("The opposing {1}", party[idxParty].name)
+    end
+
+    # Switch-in message ("You're in charge, X!" vs "{owner} sent out X!"). Base
+    # keys on pbOwnedByPlayer?; we swap the perspective for the guest. Original
+    # wording preserved verbatim (display-only, not hashed).
+    def pbMessagesOnReplace(idxBattler, idxParty)
+      return arnet_orig_pbMessagesOnReplace(idxBattler, idxParty) unless $arnet_view_flip
+      party = pbParty(idxBattler)
+      newPkmnName = party[idxParty].name
+      if party[idxParty].ability == :ILLUSION && !pbCheckGlobalAbility(:NEUTRALIZINGGAS)
+        new_index = pbLastInTeam(idxBattler)
+        newPkmnName = party[new_index].name if new_index >= 0 && new_index != idxParty
+      end
+      if ARNet.render_own?(idxBattler)
+        opposing = @battlers[idxBattler].pbDirectOpposing
+        if opposing.fainted? || opposing.hp == opposing.totalhp
+          pbDisplayBrief(_INTL("You're in charge, {1}!", newPkmnName))
+        elsif opposing.hp >= opposing.totalhp / 2
+          pbDisplayBrief(_INTL("Go for it, {1}!", newPkmnName))
+        elsif opposing.hp >= opposing.totalhp / 4
+          pbDisplayBrief(_INTL("Just a little more! Hang in there, {1}!", newPkmnName))
+        else
+          pbDisplayBrief(_INTL("Your opponent's weak! Get 'em, {1}!", newPkmnName))
+        end
+      else
+        owner = pbGetOwnerFromBattlerIndex(idxBattler)
+        pbDisplayBrief(_INTL("\\j[{1},은,는] \\j[{2},을,를] 내보냈다!", owner.full_name, newPkmnName))
+      end
+    end
+
+    # Recall message ("Come back!" vs "{owner} withdrew X!").
+    def pbMessageOnRecall(battler)
+      return arnet_orig_pbMessageOnRecall(battler) unless $arnet_view_flip
+      if ARNet.render_own?(battler.index)
+        if battler.hp <= battler.totalhp / 4
+          pbDisplayBrief(_INTL("Good job, {1}! Come back!", battler.name))
+        elsif battler.hp <= battler.totalhp / 2
+          pbDisplayBrief(_INTL("OK, {1}! Come back!", battler.name))
+        elsif battler.turnCount >= 5
+          pbDisplayBrief(_INTL("{1}, that's enough! Come back!", battler.name))
+        elsif battler.turnCount >= 2
+          pbDisplayBrief(_INTL("{1}, come back!", battler.name))
+        else
+          pbDisplayBrief(_INTL("{1}, switch out! Come back!", battler.name))
+        end
+      else
+        owner = pbGetOwnerName(battler.index)
+        pbDisplayBrief(_INTL("\\j[{1},이,가] \\j[{2},을,를] 넣었다!", owner, battler.name))
+      end
+    end
+  end
+end
+
+#--- 8) Data box slide direction: the individual DataBoxAppear/Disappear derive
+# left/right from @idxBox (the RAW index), so they don't flip for the guest. The
+# *All variants already use box.battler.index — which is our flipped MirrorBattler
+# — so we mirror that here: drive the direction from sprite.battler.index. -------
+if defined?(Battle::Scene::Animation::DataBoxAppear)
+  class Battle::Scene::Animation::DataBoxAppear
+    unless method_defined?(:arnet_orig_dbappear_cp)
+      alias_method :arnet_orig_dbappear_cp, :createProcesses
+    end
+    def createProcesses
+      return arnet_orig_dbappear_cp unless $arnet_view_flip
+      sprite = @sprites["dataBox_#{@idxBox}"]
+      return if !sprite
+      vertical = !sprite.is_a?(Battle::Scene::SafariDataBox) && sprite.style &&
+                 GameData::DataboxStyle.get(sprite.style).vertical_anim
+      if vertical
+        return arnet_orig_dbappear_cp   # vertical: no left/right, already correct
+      end
+      dir = (sprite.battler.index.even?) ? 1 : -1   # battler = flipped proxy
+      box = addSprite(sprite)
+      box.setVisible(0, true) if !sprite.battler.fainted?
+      box.setDelta(0, dir * Graphics.width / 2, 0)
+      box.moveDelta(0, 8, -dir * Graphics.width / 2, 0)
+    end
+  end
+end
+
+if defined?(Battle::Scene::Animation::DataBoxDisappear)
+  class Battle::Scene::Animation::DataBoxDisappear
+    unless method_defined?(:arnet_orig_dbdisappear_cp)
+      alias_method :arnet_orig_dbdisappear_cp, :createProcesses
+    end
+    def createProcesses
+      return arnet_orig_dbdisappear_cp unless $arnet_view_flip
+      sprite = @sprites["dataBox_#{@idxBox}"]
+      return if !sprite
+      vertical = !sprite.is_a?(Battle::Scene::SafariDataBox) && sprite.style &&
+                 GameData::DataboxStyle.get(sprite.style).vertical_anim
+      if vertical
+        return arnet_orig_dbdisappear_cp
+      end
+      dir = (sprite.battler.index.even?) ? 1 : -1
+      box = addSprite(sprite)
+      box.moveDelta(0, 8, dir * Graphics.width / 2, 0)
+      box.setVisible(8, false)
+    end
+  end
+end
+
+#--- 9) Substitute doll (DBK Animated Pokémon System): the doll's front/back
+# sprite, vertical offset AND left/right slide direction are all derived from
+# `@battler.opposes?` (player-relative, canonical). Under the guest's flipped
+# view those come out reversed (doll leaves/enters on the wrong side). We
+# reimplement the three doll animations with every opposes?-derived presentation
+# routed through ARNet.pres_far? (and metrics through pres_index), matching the
+# main battler sprite. Display-only; never hashed. When not flipped we defer to
+# the original verbatim. -------------------------------------------------------
+if defined?(Battle::Scene::Animation::SubstituteAppear)
+  class Battle::Scene::Animation::SubstituteAppear
+    unless method_defined?(:arnet_orig_subappear_cp)
+      alias_method :arnet_orig_subappear_cp, :createProcesses
+    end
+    def initialize(sprites, viewport, battler)
+      @battler  = battler
+      @filename = "Graphics/Pokemon/substitute"
+      @filename += "_back" if !ARNet.pres_far?(@battler)
+      super(sprites, viewport)
+    end
+    def createProcesses
+      return arnet_orig_subappear_cp unless $arnet_view_flip
+      delay = 0
+      batSprite = @sprites["pokemon_#{@battler.index}"]
+      return if batSprite.substitute
+      pos = Battle::Scene.pbBattlerPosition(batSprite.index, batSprite.sideSize)
+      offset = ARNet.pres_far?(@battler) ? Settings::SUBSTITUTE_DOLL_METRICS[1] : Settings::SUBSTITUTE_DOLL_METRICS[0]
+      substitute = addNewSprite(pos[0], pos[1] + offset - 128, @filename, PictureOrigin::BOTTOM)
+      substitute.setZ(delay, batSprite.z)
+      substitute.setOpacity(delay, 0)
+      shadow = addSprite(@sprites["shadow_#{@battler.index}"], PictureOrigin::CENTER)
+      shadow.setVisible(delay, false)
+      battler = addSprite(batSprite, PictureOrigin::BOTTOM)
+      dir = ARNet.pres_far?(@battler) ? Graphics.width / 2 : -Graphics.width / 2
+      battler.moveDelta(delay, 6, dir, 0)
+      battler.setSE(delay, "GUI party switch")
+      delay = battler.totalDuration
+      substitute.moveDelta(delay, 6, 0, 128)
+      substitute.moveOpacity(delay, 6, 255)
+      substitute.setSE(delay + 4, "Anim/Substitute")
+      delay = substitute.totalDuration
+      4.times do |i|
+        off = (i < 2) ? 50 : 20
+        off = -off if i.even?
+        duration = 4 - i
+        substitute.moveDelta(delay, duration, 0, off)
+        delay = substitute.totalDuration
+      end
+    end
+  end
+end
+
+if defined?(Battle::Scene::Animation::SubstituteSwapIn)
+  class Battle::Scene::Animation::SubstituteSwapIn
+    unless method_defined?(:arnet_orig_subswapin_cp)
+      alias_method :arnet_orig_subswapin_cp, :createProcesses
+    end
+    def initialize(sprites, viewport, battler)
+      @battler  = battler
+      @filename = "Graphics/Pokemon/substitute"
+      @filename += "_back" if !ARNet.pres_far?(@battler)
+      super(sprites, viewport)
+    end
+    def createProcesses
+      return arnet_orig_subswapin_cp unless $arnet_view_flip
+      delay = 0
+      batSprite = @sprites["pokemon_#{@battler.index}"]
+      return if batSprite.substitute
+      pos = Battle::Scene.pbBattlerPosition(batSprite.index, batSprite.sideSize)
+      offset = ARNet.pres_far?(@battler) ? Settings::SUBSTITUTE_DOLL_METRICS[1] : Settings::SUBSTITUTE_DOLL_METRICS[0]
+      substitute = addNewSprite(pos[0], pos[1] + offset, @filename, PictureOrigin::BOTTOM)
+      sprite = @pictureEx.length - 1
+      dir = ARNet.pres_far?(@battler) ? Graphics.width / 2 : -Graphics.width / 2
+      substitute.setXY(delay, @pictureSprites[sprite].x + dir, @pictureSprites[sprite].y)
+      substitute.setZ(delay, batSprite.z)
+      substitute.setVisible(delay, false)
+      shadow = addSprite(@sprites["shadow_#{@battler.index}"], PictureOrigin::CENTER)
+      shadow.setVisible(delay, false)
+      battler = addSprite(batSprite, PictureOrigin::BOTTOM)
+      battler.moveDelta(delay, 6, dir, 0)
+      battler.setSE(delay, "GUI party switch")
+      delay = battler.totalDuration
+      battler.setVisible(delay, false)
+      substitute.setVisible(delay, true)
+      substitute.moveDelta(delay, 6, -dir, 0)
+    end
+  end
+end
+
+if defined?(Battle::Scene::Animation::SubstituteSwapOut)
+  class Battle::Scene::Animation::SubstituteSwapOut
+    unless method_defined?(:arnet_orig_subswapout_cp)
+      alias_method :arnet_orig_subswapout_cp, :createProcesses
+    end
+    # (no @filename in initialize — the real Pokémon sprite is rebuilt here — so
+    # only createProcesses needs the presentation flip.)
+    def createProcesses
+      return arnet_orig_subswapout_cp unless $arnet_view_flip
+      delay = 0
+      batSprite = @sprites["pokemon_#{@battler.index}"]
+      return if !batSprite.substitute
+      pos = Battle::Scene.pbBattlerPosition(batSprite.index, batSprite.sideSize)
+      pokemon = addPokeSprite(@pkmn, !ARNet.pres_far?(@battler), PictureOrigin::BOTTOM)
+      sprite = @pictureEx.length - 1
+      @pictureSprites[sprite].x = pos[0]
+      @pictureSprites[sprite].y = pos[1]
+      metrics_data = GameData::SpeciesMetrics.get_species_form(@pkmn.species, @pkmn.form, @pkmn.female?)
+      metrics_data.apply_metrics_to_sprite(@pictureSprites[sprite], ARNet.pres_index(batSprite.index))
+      dir = ARNet.pres_far?(@battler) ? Graphics.width / 2 : -Graphics.width / 2
+      pokemon.setXY(delay, @pictureSprites[sprite].x + dir, @pictureSprites[sprite].y)
+      pokemon.setZ(delay, batSprite.z)
+      pokemon.setVisible(delay, false)
+      shadow = addSprite(@sprites["shadow_#{@battler.index}"], PictureOrigin::CENTER)
+      shadow.setVisible(delay, false)
+      battler = addSprite(batSprite, PictureOrigin::BOTTOM)
+      if @broken
+        battler.moveOpacity(delay, 8, 0)
+      else
+        battler.moveDelta(delay, 6, dir, 0)
+        battler.setSE(delay, "GUI party switch")
+      end
+      delay = battler.totalDuration
+      battler.setVisible(delay, false)
+      battler.setOpacity(delay, 255)
+      pokemon.setVisible(delay, true)
+      pokemon.moveDelta(delay, 6, -dir, 0)
+    end
+  end
+end
+
+#--- 10) Ability splash bar (Intimidate, Levitate, Drizzle, Sturdy, Trace…): the
+# scene picks `abilityBar_#{battler.index % 2}` and its slide direction from the
+# battler's side, so the guest sees every ability pop up on the WRONG side (own
+# abilities on the foe bar and vice-versa). This fires constantly in-battle. Same
+# trick as the data boxes: hand the scene an index-flipped MirrorBattler so the
+# side (bar choice + direction + alignment) mirrors, while name/ability/etc. still
+# read correctly via delegation. Guard against double-wrap: the original
+# pbShowAbilitySplash calls pbHideAbilitySplash internally (which re-enters this
+# override) — respond_to?(:__real__) is true only for an already-wrapped proxy. -
+if defined?(Battle::Scene) && Battle::Scene.method_defined?(:pbShowAbilitySplash)
+  class Battle::Scene
+    unless method_defined?(:arnet_orig_pbShowAbilitySplash)
+      alias_method :arnet_orig_pbShowAbilitySplash,    :pbShowAbilitySplash
+      alias_method :arnet_orig_pbHideAbilitySplash,    :pbHideAbilitySplash
+      alias_method :arnet_orig_pbReplaceAbilitySplash, :pbReplaceAbilitySplash
+    end
+    def arnet_mirror_battler(battler)
+      return battler unless $arnet_view_flip
+      return battler if battler.respond_to?(:__real__)   # already a proxy
+      ARNet::MirrorBattler.new(battler)
+    end
+    def pbShowAbilitySplash(battler)
+      arnet_orig_pbShowAbilitySplash(arnet_mirror_battler(battler))
+    end
+    def pbHideAbilitySplash(battler)
+      arnet_orig_pbHideAbilitySplash(arnet_mirror_battler(battler))
+    end
+    def pbReplaceAbilitySplash(battler)
+      arnet_orig_pbReplaceAbilitySplash(arnet_mirror_battler(battler))
+    end
+  end
+end
+
+#--- 11) Party lineup bar (the remaining-Poké-Ball count that slides in at battle
+# start AND on every mid-battle switch): LineupAppear derives the bar/ball
+# sprite POSITIONS and slide DIRECTION from @side, so the guest sees their own
+# count in the far (foe) seat. We must NOT change which partyBar_#{side} sprite a
+# side uses — that key is hard-wired to the fade that hides it (PlayerFade->bar0,
+# TrainerFade->bar1, opacity->0 regardless of fullAnim), and decoupling it is what
+# caused the earlier "lineup never disappears" regression. So we keep the sprite
+# KEY canonical (@side) and flip only the POSITION + slide direction via
+# pres_index. Fades stay matched => the bar always disappears; only its seat
+# mirrors. ---------------------------------------------------------------------
+if defined?(Battle::Scene::Animation::LineupAppear)
+  class Battle::Scene::Animation::LineupAppear
+    unless method_defined?(:arnet_orig_lineup_resetgfx)
+      alias_method :arnet_orig_lineup_resetgfx, :resetGraphics
+      alias_method :arnet_orig_lineup_cp,       :createProcesses
+    end
+    def resetGraphics(sprites)
+      return arnet_orig_lineup_resetgfx(sprites) unless $arnet_view_flip
+      bar = sprites["partyBar_#{@side}"]     # KEY stays canonical (fade match)
+      ps  = ARNet.pres_index(@side)          # POSITION uses the mirrored seat
+      case ps
+      when 0   # near/player seat (bottom-right)
+        barX  = Graphics.width - BAR_DISPLAY_WIDTH
+        barY  = Graphics.height - 142
+        ballX = barX + 44
+        ballY = barY - 30
+      when 1   # far/opposing seat (top-left)
+        barX  = BAR_DISPLAY_WIDTH
+        barY  = 114
+        ballX = barX - 44 - 30
+        ballY = barY - 30
+        barX -= bar.bitmap.width
+      end
+      ballXdiff = 32 * (1 - (2 * ps))
+      bar.x       = barX
+      bar.y       = barY
+      bar.opacity = 255
+      bar.visible = false
+      Battle::Scene::NUM_BALLS.times do |i|
+        ball = sprites["partyBall_#{@side}_#{i}"]
+        ball.x       = ballX
+        ball.y       = ballY
+        ball.opacity = 255
+        ball.visible = false
+        ballX += ballXdiff
+      end
+    end
+    def createProcesses
+      return arnet_orig_lineup_cp unless $arnet_view_flip
+      bar = addSprite(@sprites["partyBar_#{@side}"])
+      bar.setVisible(0, true)
+      dir = (ARNet.pres_index(@side) == 0) ? 1 : -1   # slide from the mirrored seat
+      bar.setDelta(0, dir * Graphics.width / 2, 0)
+      bar.moveDelta(0, 8, -dir * Graphics.width / 2, 0)
+      delay = bar.totalDuration
+      Battle::Scene::NUM_BALLS.times do |i|
+        createBall(i, (@fullAnim) ? delay + (i * 2) : 0, dir)   # createBall: key @side, dir mirrored
+      end
+    end
+  end
+end
+
+#--- 12) Trainer/lineup fade-out slide DIRECTION. Canonically PlayerFade slides
+# player_N off to the LEFT and TrainerFade slides trainer_N off to the RIGHT. On
+# the guest those keys hold the OPPONENT (far) and the LOCAL player (near)
+# respectively, so both slide the wrong way. We keep the sprite KEYS canonical
+# (the fade<->bar coupling that guarantees the lineup disappears must not change —
+# see section 11) and only NEGATE the horizontal deltas when flipped, so from the
+# local seat the opponent always exits RIGHT and the local player exits LEFT.
+# Opacity fades are untouched. When not flipped we defer to the core verbatim.
+if defined?(Battle::Scene::Animation::PlayerFade)
+  class Battle::Scene::Animation::PlayerFade
+    unless method_defined?(:arnet_orig_playerfade_cp)
+      alias_method :arnet_orig_playerfade_cp, :createProcesses
+    end
+    def createProcesses
+      return arnet_orig_playerfade_cp unless $arnet_view_flip
+      i = 1
+      while @sprites["player_#{i}"]
+        pl = @sprites["player_#{i}"]
+        i += 1
+        next if !pl.visible || pl.x < 0
+        trainer = addSprite(pl, PictureOrigin::BOTTOM)
+        trainer.moveDelta(0, 16, Graphics.width / 2, 0)   # flipped: exit RIGHT
+        if pl.bitmap && !pl.bitmap.disposed? && pl.bitmap.width >= pl.bitmap.height * 2
+          size = pl.src_rect.width
+          trainer.setSrc(0, size, 0)
+          trainer.setSrc(5, size * 2, 0)
+          trainer.setSrc(7, size * 3, 0)
+          trainer.setSrc(9, size * 4, 0)
+        end
+        trainer.setVisible(16, false)
+      end
+      delay = 3
+      if @sprites["partyBar_0"]&.visible
+        partyBar = addSprite(@sprites["partyBar_0"])
+        partyBar.moveDelta(delay, 16, Graphics.width / 4, 0) if @fullAnim
+        partyBar.moveOpacity(delay, 12, 0)
+        partyBar.setVisible(delay + 12, false)
+        partyBar.setOpacity(delay + 12, 255)
+      end
+      Battle::Scene::NUM_BALLS.times do |j|
+        next if !@sprites["partyBall_0_#{j}"] || !@sprites["partyBall_0_#{j}"].visible
+        partyBall = addSprite(@sprites["partyBall_0_#{j}"])
+        partyBall.moveDelta(delay + (2 * j), 16, Graphics.width, 0) if @fullAnim
+        partyBall.moveOpacity(delay, 12, 0)
+        partyBall.setVisible(delay + 12, false)
+        partyBall.setOpacity(delay + 12, 255)
+      end
+    end
+  end
+end
+
+if defined?(Battle::Scene::Animation::TrainerFade)
+  class Battle::Scene::Animation::TrainerFade
+    unless method_defined?(:arnet_orig_trainerfade_cp)
+      alias_method :arnet_orig_trainerfade_cp, :createProcesses
+    end
+    def createProcesses
+      return arnet_orig_trainerfade_cp unless $arnet_view_flip
+      i = 1
+      while @sprites["trainer_#{i}"]
+        trSprite = @sprites["trainer_#{i}"]
+        i += 1
+        next if !trSprite.visible || trSprite.x > Graphics.width
+        trainer = addSprite(trSprite, PictureOrigin::BOTTOM)
+        trainer.moveDelta(0, 16, -Graphics.width / 2, 0)   # flipped: exit LEFT
+        trainer.setVisible(16, false)
+      end
+      delay = 3
+      if @sprites["partyBar_1"]&.visible
+        partyBar = addSprite(@sprites["partyBar_1"])
+        partyBar.moveDelta(delay, 16, -Graphics.width / 4, 0) if @fullAnim
+        partyBar.moveOpacity(delay, 12, 0)
+        partyBar.setVisible(delay + 12, false)
+        partyBar.setOpacity(delay + 12, 255)
+      end
+      Battle::Scene::NUM_BALLS.times do |j|
+        next if !@sprites["partyBall_1_#{j}"] || !@sprites["partyBall_1_#{j}"].visible
+        partyBall = addSprite(@sprites["partyBall_1_#{j}"])
+        partyBall.moveDelta(delay + (2 * j), 16, -Graphics.width, 0) if @fullAnim
+        partyBall.moveOpacity(delay, 12, 0)
+        partyBall.setVisible(delay + 12, false)
+        partyBall.setOpacity(delay + 12, 255)
+      end
+    end
+  end
+end

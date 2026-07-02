@@ -1,0 +1,14 @@
+{
+  "name": "anotherred-relay",
+  "version": "0.1.0",
+  "description": "Another Red Online — opaque relay + code-room matchmaking (pure Node, no deps)",
+  "main": "relay.js",
+  "scripts": {
+    "start": "node relay.js",
+    "test": "node test_loopback.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "private": true
+}

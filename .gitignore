@@ -1,0 +1,36 @@
+# --- Base game (DO NOT COMMIT — third-party / copyrighted) ---------------------
+# The full "Another Red" game copy used as the bake target, and the decompiled
+# base-game Ruby scripts kept locally for reference. Neither is ours to publish.
+/tmp/
+/decompiled/
+
+# --- Local tool / session state ----------------------------------------------
+.claude/
+*.log
+*.clog
+
+# --- Backups & generated artifacts -------------------------------------------
+*.bak
+*.tmp
+*.orig
+
+# --- Python (baker tooling) --------------------------------------------------
+__pycache__/
+*.pyc
+
+# --- Node (relay server) -----------------------------------------------------
+node_modules/
+npm-debug.log*
+
+# --- OS cruft ----------------------------------------------------------------
+Thumbs.db
+desktop.ini
+.DS_Store
+*~
+
+# --- Agent-facing docs -------------------------------------------------------
+# Internal design/protocol/deploy notes written for the coding agent to read.
+# README.md files stay tracked; every other *.md is kept out of the repo.
+*.md
+!README.md
+

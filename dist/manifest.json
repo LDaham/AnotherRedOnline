@@ -1,0 +1,36 @@
+{
+  "version": "0.1.0",
+  "plugin": "Another Red Online",
+  "element": {
+    "path": "element.bin",
+    "sha256": "c45f23cddd7861edf06c301e28c0eed2317823d055cee20366faab7f8e870b8a",
+    "scripts": [
+      "[000] NetBundle.rb",
+      "[000b] SpeedControl.rb",
+      "[001] NetProtocol.rb",
+      "[002] NetClient.rb",
+      "[003] NetSession.rb",
+      "[004] NetDebug.rb",
+      "[005] TeamSerial.rb",
+      "[006] BattleRNG.rb",
+      "[007] BattleChoices.rb",
+      "[008] BattleLink.rb",
+      "[009] BattleLockstep.rb",
+      "[010] BattleLauncher.rb",
+      "[011] PCMenuHook.rb",
+      "[012] BattleMirror.rb",
+      "[013] SelectionUI.rb",
+      "[014] BattleClock.rb"
+    ]
+  },
+  "assets": [
+    {
+      "path": "Audio/BGM/Arena Battle.ogg",
+      "sha256": "5ec63b33beeeddb4d0059b24fe6417827ba2c2e7509f65753e378b0c05854ae0"
+    },
+    {
+      "path": "Audio/BGM/Team Select.ogg",
+      "sha256": "08dc59d687dc710012fa28f287e091e14d83c9bd14dbe7b15722e0be64c21ba2"
+    }
+  ]
+}
