@@ -56,26 +56,25 @@ class Battle
   end
 
   #--- selection timing + auto-pick --------------------------------------------
-  # Wrap the per-battler command menu: start the turn clock, let the frame poll
-  # (arnet_menu_poll below) raise ClockExpired at the cap, then deduct the time
-  # actually spent from the bank.
-  alias_method :arnet_clock_orig_run_choice_menu, :arnet_run_choice_menu
-  def arnet_run_choice_menu(idx)
-    return arnet_clock_orig_run_choice_menu(idx) unless arnet_clock_enabled?
+  # In a double battle BOTH of my Pokémon SHARE one per-turn clock (time_turn):
+  # the countdown starts when the command phase opens and does NOT reset between
+  # the first and second battler. So we start/stop the clock (open the HUD, then
+  # deduct the bank) around the WHOLE command phase, not around each battler menu.
+  #
+  # [014] aliases the ALREADY-wrapped [009] pbCommandPhase (loaded earlier), so the
+  # chain is: [014] pbCommandPhase -> [009] pbCommandPhase -> core.
+  alias_method :arnet_clock_orig_command_phase, :pbCommandPhase
+  def pbCommandPhase
+    return arnet_clock_orig_command_phase unless arnet_clock_enabled?
     @arnet_clock_turn_start = System.uptime
     @arnet_clock_cap = [@arnet_ruleset["time_turn"].to_f, arnet_clock[:bank][@arnet_side]].min
     arnet_clock_hud_open
-    ok = true
-    timed_out = false
     begin
-      ok = arnet_clock_orig_run_choice_menu(idx)
-    rescue ARNet::ClockExpired
-      timed_out = true
-      arnet_auto_choose(idx)
-      ok = true
+      arnet_clock_orig_command_phase
     ensure
       used = System.uptime - @arnet_clock_turn_start
-      used = @arnet_clock_cap if timed_out || used > @arnet_clock_cap
+      used = @arnet_clock_cap if used > @arnet_clock_cap
+      used = 0 if used < 0
       side = @arnet_side
       arnet_clock[:bank][side] -= used
       if arnet_clock[:bank][side] <= 0
@@ -85,7 +84,22 @@ class Battle
       @arnet_clock_turn_start = nil
       arnet_clock_hud_close
     end
-    ok
+  end
+
+  # Per-battler menu wrapper: the shared clock is already running (started by the
+  # command-phase wrapper above), so here we ONLY catch the cap being hit and
+  # auto-pick for THIS battler. When the shared time is already spent, the frame
+  # poll keeps firing ClockExpired, so each still-unchosen battler is auto-picked
+  # in turn as the loop advances.
+  alias_method :arnet_clock_orig_run_choice_menu, :arnet_run_choice_menu
+  def arnet_run_choice_menu(idx, allowBack = false)
+    return arnet_clock_orig_run_choice_menu(idx, allowBack) unless arnet_clock_enabled?
+    begin
+      arnet_clock_orig_run_choice_menu(idx, allowBack)
+    rescue ARNet::ClockExpired
+      arnet_auto_choose(idx)
+      true
+    end
   end
 
   # Called every frame during a selection menu (chained from [009]'s poll via the
@@ -177,15 +191,24 @@ class Battle
   #--- on-screen clock HUD (shown only while selecting; the bank only ticks then)
   def arnet_clock_hud_open
     return if @arnet_clock_hud
-    w = Window_AdvancedTextPokemon.new("")
-    w.letterbyletter = false
-    w.z      = 99990
-    w.width  = 80
-    w.height = 64
+    # 배틀 씬은 모든 UI를 z=99999 뷰포트에 그리고, 그 안의 배경 스프라이트가 화면
+    # 전체를 불투명하게 덮는다. 뷰포트 없는 스프라이트는 그 배경 뒤로 완전히
+    # 가려지므로, 더 높은 z의 전용 뷰포트를 만들어 그 위에 HUD를 얹는다.
+    @arnet_clock_vp = Viewport.new(0, 0, Graphics.width, Graphics.height)
+    @arnet_clock_vp.z = 100000
+    # 창(윈도우스킨 박스) 대신 순수 스프라이트+비트맵에 숫자만 그린다. 굵은 큰
+    # 글씨에 검은 외곽선을 둘러 어떤 배경 위에서도 잘 보이게 한다.
+    s = Sprite.new(@arnet_clock_vp)
+    s.bitmap = Bitmap.new(112, 56)
+    # pbSetSystemFont은 전역(private) 메서드라 respond_to? 가드에 걸리지 않게 직접
+    # 호출한다(폰트 미설정 시 mkxp 기본 비트맵으로는 글자가 렌더링되지 않음).
+    pbSetSystemFont(s.bitmap)
+    s.bitmap.font.size = 22
+    s.bitmap.font.bold = false
     # 게임 화면 우상단에 배치(남은 초 숫자만 표시).
-    w.x      = Graphics.width - w.width
-    w.y      = 0
-    @arnet_clock_hud = w
+    s.x = Graphics.width - s.bitmap.width - 2
+    s.y = 2
+    @arnet_clock_hud = s
     arnet_clock_hud_update
   end
 
@@ -193,13 +216,35 @@ class Battle
     return unless @arnet_clock_hud && @arnet_clock_turn_start
     turn_left = (@arnet_clock_cap - (System.uptime - @arnet_clock_turn_start)).ceil
     turn_left = 0 if turn_left < 0
-    @arnet_clock_hud.text = turn_left.to_s   # 숫자만
+    bmp = @arnet_clock_hud.bitmap
+    bmp.clear
+    txt = turn_left.to_s
+    tw  = bmp.text_size(txt).width
+    x   = bmp.width - tw - 6   # 우측 정렬
+    y   = 4
+    fill = (turn_left <= 5) ? Color.new(255, 80, 80) : Color.new(255, 255, 255)  # 5초 이하 경고색
+    # 1px 검은 외곽선(8방향) 후 밝은 글씨를 위에 얹어 대비 확보.
+    bmp.font.color = Color.new(0, 0, 0)
+    (-1..1).each do |dx|
+      (-1..1).each do |dy|
+        next if dx == 0 && dy == 0
+        bmp.draw_text(x + dx, y + dy, tw + 12, 44, txt)
+      end
+    end
+    bmp.font.color = fill
+    bmp.draw_text(x, y, tw + 12, 44, txt)
   end
 
   def arnet_clock_hud_close
-    return unless @arnet_clock_hud
-    @arnet_clock_hud.dispose rescue nil
-    @arnet_clock_hud = nil
+    if @arnet_clock_hud
+      @arnet_clock_hud.bitmap.dispose rescue nil
+      @arnet_clock_hud.dispose rescue nil
+      @arnet_clock_hud = nil
+    end
+    if @arnet_clock_vp
+      @arnet_clock_vp.dispose rescue nil
+      @arnet_clock_vp = nil
+    end
   end
 
   def arnet_fmt_clock(secs)

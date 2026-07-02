@@ -756,3 +756,112 @@ if defined?(Battle::Scene::Animation::TrainerFade)
     end
   end
 end
+
+#--- 9) End-of-battle result perspective ---------------------------------------
+# pbEndOfBattle prints the win/lose text AND plays the victory/defeat cue from
+# side0's (host's) point of view, so the guest would otherwise see the HOST's
+# result ("호스트와 게스트에게 동일하게 표시됨"). The simulation is canonical, so we
+# flip PRESENTATION only: for the guest we invert @decision (win<->lose) and swap
+# the @player/@opponent trainer arrays around the core call, then restore.
+#   - The core cleanup (item restore, party loop) reads the side0/side1 arrays
+#     directly (pbParty, @initialItems/@usedInBattle), NOT these trainer objects,
+#     so the swap changes ONLY the displayed names/lose_text/win_text and which
+#     result fanfare pbEndBattle plays.
+#   - pbGainMoney/pbLoseMoney are no-ops here (@internalBattle=false, moneyGain=false).
+#   - Draw (@decision==5) is symmetric, so it is left unchanged.
+# Gated on $arnet_view_flip (true only for the guest, around pbStartBattle).
+if defined?(Battle)
+  class Battle
+    unless method_defined?(:arnet_orig_pbEndOfBattle)
+      alias_method :arnet_orig_pbEndOfBattle, :pbEndOfBattle
+    end
+    def pbEndOfBattle
+      return arnet_orig_pbEndOfBattle unless $arnet_view_flip
+      canonical = @decision
+      @decision = 2 if canonical == 1   # host win  -> guest lost
+      @decision = 1 if canonical == 2   # host lost -> guest won
+      saved_player, saved_opponent = @player, @opponent
+      @player, @opponent = @opponent, @player   # local player = side1 (self)
+      begin
+        arnet_orig_pbEndOfBattle
+      ensure
+        @decision = canonical
+        @player   = saved_player
+        @opponent = saved_opponent
+      end
+      @decision
+    end
+  end
+end
+
+#--- 10) Target selection (doubles): up/down is cross-side -----------------------
+# The guest's view is mirrored top<->bottom, so the core chooser's UP/DOWN branch
+# (which jumps to the OPPOSING side) feels inverted: from the guest's own row at
+# the bottom, pressing UP should target the opponents on top. We copy the core
+# chooser verbatim EXCEPT that one UP/DOWN branch, which we swap for the guest.
+# Left/Right (same-side) and the highlight (follows the already-mirrored sprites)
+# are unchanged. Display-only; the chosen target index is canonical and hashed as
+# usual, so determinism is unaffected. Gated on $arnet_view_flip (guest only).
+if defined?(Battle::Scene)
+  class Battle::Scene
+    unless method_defined?(:arnet_orig_pbChooseTarget)
+      alias_method :arnet_orig_pbChooseTarget, :pbChooseTarget
+    end
+    def pbChooseTarget(idxBattler, target_data, visibleSprites = nil)
+      unless $arnet_view_flip
+        return arnet_orig_pbChooseTarget(idxBattler, target_data, visibleSprites)
+      end
+      pbShowWindow(TARGET_BOX)
+      cw = @sprites["targetWindow"]
+      texts = pbCreateTargetTexts(idxBattler, target_data)
+      mode = (target_data.num_targets == 1) ? 0 : 1
+      cw.setDetails(texts, mode)
+      cw.index = pbFirstTarget(idxBattler, target_data)
+      pbSelectBattler((mode == 0) ? cw.index : texts, 2)
+      pbFadeInAndShow(@sprites, visibleSprites) if visibleSprites
+      ret = -1
+      loop do
+        oldIndex = cw.index
+        pbUpdate(cw)
+        if mode == 0   # Choosing just one target, can change index
+          if Input.trigger?(Input::LEFT) || Input.trigger?(Input::RIGHT)
+            inc = (cw.index.even?) ? -2 : 2
+            inc *= -1 if Input.trigger?(Input::RIGHT)
+            indexLength = @battle.sideSizes[cw.index % 2] * 2
+            newIndex = cw.index
+            loop do
+              newIndex += inc
+              break if newIndex < 0 || newIndex >= indexLength
+              next if texts[newIndex].nil?
+              cw.index = newIndex
+              break
+            end
+          elsif (Input.trigger?(Input::DOWN) && cw.index.even?) ||
+                (Input.trigger?(Input::UP)   && cw.index.odd?)   # UP/DOWN swapped for the mirrored view
+            tryIndex = @battle.pbGetOpposingIndicesInOrder(cw.index)
+            tryIndex.each do |idxBattlerTry|
+              next if texts[idxBattlerTry].nil?
+              cw.index = idxBattlerTry
+              break
+            end
+          end
+          if cw.index != oldIndex
+            pbPlayCursorSE
+            pbSelectBattler(cw.index, 2)
+          end
+        end
+        if Input.trigger?(Input::USE)     # Confirm
+          ret = cw.index
+          pbPlayDecisionSE
+          break
+        elsif Input.trigger?(Input::BACK)   # Cancel
+          ret = -1
+          pbPlayCancelSE
+          break
+        end
+      end
+      pbSelectBattler(-1)
+      return ret
+    end
+  end
+end

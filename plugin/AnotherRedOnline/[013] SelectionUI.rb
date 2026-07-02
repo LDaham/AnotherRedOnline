@@ -194,10 +194,12 @@ module ARNet
         if g
           pbDrawTextPositions(b, [[g[0], cx + 24, cy + 18, :left, g[1], SHADOW, :outline]])
         end
-        # held-item marker (yellow box, like the reference sheet)
+        # held-item marker (yellow box with a blue bar across the middle, like
+        # the reference sheet's item icon).
         if (pk.item rescue nil)
           b.fill_rect(cx + 20, cy - 14, 12, 12, Color.new(16, 16, 16))
           b.fill_rect(cx + 21, cy - 13, 10, 10, ITEMBOX)
+          b.fill_rect(cx + 21, cy - 9,  10,  2, Color.new(48, 104, 216))
         end
         if mine
           # selection border + send-out order badge (top-left) on my chosen mons

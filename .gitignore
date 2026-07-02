@@ -14,6 +14,12 @@
 *.tmp
 *.orig
 
+# --- Release artifacts (DO NOT COMMIT) ---------------------------------------
+# build_release.py bundles the FULL baked PluginScripts.rxdata (the 29 base-game
+# plugins + our plugin) plus audio. That base-game content is third-party and the
+# zip is large — it belongs on GitHub Releases as an asset, never in git history.
+/dist/*.zip
+
 # --- Python (baker tooling) --------------------------------------------------
 __pycache__/
 *.pyc

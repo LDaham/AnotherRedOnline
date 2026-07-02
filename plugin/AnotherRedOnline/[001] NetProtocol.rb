@@ -9,11 +9,11 @@ require 'digest'
 
 module ARNet
   PROTO       = 1
-  # Mod version — MUST match plugin/AnotherRedOnline/meta.txt (and the update
-  # manifest built by tools/build_dist.py). Peers exchange this in the handshake
-  # and refuse to battle across different mod versions: differing battle logic
-  # would desync mid-match. The .bat launcher keeps everyone on the latest, so a
-  # mismatch should be rare — bump this together with meta.txt on every release.
+  # Mod version — MUST match plugin/AnotherRedOnline/meta.txt (and the zip name
+  # built by tools/build_release.py). Peers exchange this in the handshake and
+  # refuse to battle across different mod versions: differing battle logic would
+  # desync mid-match. Distribution is a manual Release zip (no auto-updater), so
+  # a mismatch is possible — bump this together with meta.txt on every release.
   MOD_VERSION = "0.1.0"
   MAX_FRAME   = 64 * 1024
   DEFAULT_PORT = 8787

@@ -8,6 +8,20 @@
 # 호스트는 빈칸 확인 → 방 코드 발급(화면 표시), 게스트는 그 코드를 입력해 입장.
 # 페어링되면 ARNet.start_online_battle 로 락스텝 배틀 시작.
 #===============================================================================
+# 방 코드는 대문자만 쓴다. 코어 텍스트 입력창의 문자 삽입을 가로채, 우리 흐름에서
+# $arnet_force_upcase 가 켜져 있을 때만 입력 문자를 실시간으로 대문자로 바꾼다
+# (게스트가 소문자를 쳐도 화면에 바로 대문자로 보임). 다른 텍스트 입력(닉네임 등)은
+# 플래그가 꺼져 있어 영향 없음.
+class Window_TextEntry
+  unless method_defined?(:arnet_orig_insert)
+    alias_method :arnet_orig_insert, :insert
+    def insert(ch)
+      ch = ch.upcase if $arnet_force_upcase && ch.is_a?(String)
+      arnet_orig_insert(ch)
+    end
+  end
+end
+
 module ARNet
   # 예외를 파일(arnet_err.txt, mkxp 쓰기 디렉터리=%APPDATA%\Pokemon Another Red\)에
   # 남기고 화면에도 표시. 인게임 디버깅용 — 필드에서 크래시로 게임이 죽는 것을 방지.
@@ -33,9 +47,14 @@ module ARNet
       return
     end
 
-    code = pbMessageFreeText(
-      _INTL("상대의 방 코드를 입력하세요.\n새 방을 만들려면 빈칸으로 두고 확인하세요."),
-      "", false, 8)
+    begin
+      $arnet_force_upcase = true   # 방 코드 입력은 대문자만(실시간 변환)
+      code = pbMessageFreeText(
+        _INTL("상대의 방 코드를 입력하세요.\n새 방을 만들려면 빈칸으로 두고 확인하세요."),
+        "", false, 8)
+    ensure
+      $arnet_force_upcase = false
+    end
     host_mode = (code.nil? || code.strip.empty?)
     code = code.to_s.strip.upcase
 

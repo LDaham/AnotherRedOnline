@@ -49,14 +49,28 @@ class Battle
       @megaEvolution[side].each_with_index { |m, i| @megaEvolution[side][i] = -1 if m && m >= 0 }
     end
 
-    # 1) Local input for my side
-    arnet_my_active_indices.each do |idx|
-      unless arnet_run_choice_menu(idx)
-        @command_phase = false; return     # forfeit / abort already set @decision
+    # 1) Local input for my side. In doubles the player may press Cancel on the
+    # SECOND Pokémon to go back and redo the FIRST one's action (mirrors the core
+    # command phase). Both Pokémon SHARE one per-turn clock — [014] starts it once
+    # around the whole command phase, so the two decisions split the same time.
+    indices = arnet_my_active_indices
+    i = 0
+    while i < indices.length
+      idx = indices[i]
+      result = arnet_run_choice_menu(idx, i > 0)   # allow "back" on every battler but the first
+      case result
+      when :back
+        pbClearChoice(idx)                # drop this (uncommitted) choice
+        i -= 1
+        pbClearChoice(indices[i])         # re-open the previous battler's choice
+        next
+      when false
+        @command_phase = false; return    # forfeit / abort already set @decision
       end
       if @decision != 0
         @command_phase = false; return
       end
+      i += 1
     end
 
     # 2) Exchange choices with the peer
@@ -68,7 +82,9 @@ class Battle
 
   # Trimmed single-battler command menu: Fight / Pokémon / Run(=forfeit).
   # Bag disabled (ruleset). Mega/etc. disabled online. Returns false on forfeit/abort.
-  def arnet_run_choice_menu(idx)
+  # Returns true (committed), false (forfeit/abort), or :back (Cancel pressed to
+  # return to the previous battler — doubles only, when allowBack is true).
+  def arnet_run_choice_menu(idx, allowBack = false)
     return true if @choices[idx][0] != :None || !pbCanShowCommands?(idx)
     # While the (blocking) selection menus run, the scene's per-frame update polls
     # the session (see arnet_menu_poll); if the peer forfeits/leaves mid-menu it
@@ -77,8 +93,14 @@ class Battle
     @arnet_in_menu = true
     begin
       loop do
-        cmd = pbCommandMenu(idx, true)
+        # firstAction = !allowBack: on the FIRST battler the 4th button is "Run"
+        # (forfeit) and B does nothing; on later battlers it becomes "Cancel" and
+        # B / Cancel returns -1, letting the player redo the previous choice.
+        cmd = pbCommandMenu(idx, !allowBack)
         case cmd
+        when -1  # Cancel => go back to the previous Pokémon (doubles)
+          return :back if allowBack
+          # first battler: nothing to go back to; just re-show the menu
         when 0   # Fight
           if pbFightMenu(idx)
             arnet_strip_mechanics(idx)
@@ -107,9 +129,27 @@ class Battle
   # while a selection menu is up; pumps the session so an incoming forfeit/leave
   # is noticed at once, then bails out of the menu via ARNet::PeerGone.
   def arnet_menu_poll
-    return unless arnet_online? && @arnet_in_menu
+    return unless arnet_online?
+    return if @arnet_peer_gone_seen
+    # Pump the session EVERY frame — during selection menus AND during turn
+    # animations. Incoming choices/switches are buffered into inboxes by the link
+    # (see [008] _on_msg), so pumping here never consumes what a later await needs;
+    # it only lets a peer disconnect/forfeit be noticed the instant the relay
+    # reports it, rather than after the whole turn's animation has played out.
     @arnet.session.update rescue nil
-    raise ARNet::PeerGone if @arnet.forfeited || @arnet.peer_left
+    return unless @arnet.forfeited || @arnet.peer_left
+    if @arnet_in_menu
+      raise ARNet::PeerGone            # rescued in arnet_run_choice_menu
+    else
+      # Detected outside a menu (mid-animation / idle): abort the battle at once so
+      # the "disconnected/forfeited" notice appears immediately. BattleAbortedException
+      # (< Exception, so `rescue => e` can't swallow it) unwinds to the core
+      # pbStartBattle rescue, which tears the scene down cleanly. [011] shows the
+      # post-battle notice from @arnet_abort_reason.
+      @arnet_peer_gone_seen = true
+      @arnet_abort_reason   = @arnet.forfeited ? :peer_forfeit : :disconnect
+      raise BattleAbortedException
+    end
   end
 
   # "상대의 선택을 기다리는 중..." 배너 — 블록된 동안(arnet_exchange_choices /
@@ -404,6 +444,7 @@ class Battle
 
   # Returns true if the peer is gone/forfeited (caller should stop the round).
   def arnet_handle_lost_peer
+    @arnet_peer_gone_seen = true   # stop the per-frame poll from re-firing during teardown
     if @arnet.forfeited
       @arnet_abort_reason = :peer_forfeit   # [011]이 종료 후 확실히 알린다
       pbDisplay(_INTL("상대가 기권했습니다!")) rescue nil
