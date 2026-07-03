@@ -282,12 +282,22 @@ module ARNet
     end
 
     #--- input loop -----------------------------------------------------------
-    def run
-      start = System.uptime
-      @sel_deadline = start + @secs   # 대기 화면에서도 같은 마감까지 카운트다운
+    # Blocking active-selection loop. `session` (optional) is pumped every frame
+    # so a peer disconnect is noticed immediately (returns :aborted) instead of
+    # only when the loop ends. The countdown lives on @sel_deadline (set once),
+    # so re-entering after an un-confirm continues the SAME timer, never resets.
+    # Returns the picks array, or :aborted if the peer dropped/aborted.
+    def run(session = nil)
+      @waiting = false
+      @sel_deadline ||= System.uptime + @secs   # set once; survives re-selection
+      @last_remain = nil
       result = nil
       loop do
-        remain = (@secs - (System.uptime - start)).ceil
+        if session
+          session.update
+          return :aborted if session.phase == :closed || session.phase == :error
+        end
+        remain = (@sel_deadline - System.uptime).ceil
         remain = 0 if remain < 0
         if remain <= 0
           i = 0
@@ -295,6 +305,7 @@ module ARNet
             @picks << i if !@picks.include?(i) && @mine[i]
             i += 1
           end
+          @timed_out = true            # time's up → no un-confirm allowed anymore
           result = @picks.dup          # keep selection (send-out) order
           break
         end
@@ -339,36 +350,54 @@ module ARNet
     end
 
     #--- wait phase (after confirm, until both ready + battle launches) --------
-    # Keep the two decks on screen with the chosen team highlighted and the mons'
-    # idle animations running, showing a "waiting for opponent" banner in the
-    # centre. [011] calls update_wait every polling-loop frame.
+    # Keeps the two decks on screen with the chosen team highlighted and the mons'
+    # idle animations running, showing a "waiting for opponent" banner + shared
+    # countdown. Driven by wait_for_battle (below), which [011] calls right after
+    # run(s) confirms; BACK there un-confirms and loops back into run(s).
     def waiting?
       @waiting
     end
 
-    def enter_wait
+    # Blocking wait after confirming, until the battle is ready. Pumps `session`
+    # each frame (idle animations + countdown keep running). Returns:
+    #   :ready    -> both confirmed, battle is starting (launch it)
+    #   :aborted  -> peer dropped/aborted
+    #   :reselect -> player pressed BACK while time remained: un-confirm & re-pick
+    # The countdown shares @sel_deadline with run, so the timer never resets.
+    def wait_for_battle(session = nil)
       @waiting = true
       @cursor  = 6            # drop the cell cursor
       @wait_last_remain = nil
       _redraw_wait(_wait_remain)
+      loop do
+        if session
+          session.update
+          return :aborted if session.phase == :closed || session.phase == :error
+          return :ready   if session.phase == :battle_ready
+        end
+        r = _wait_remain
+        if r != @wait_last_remain     # 1초 단위로만 다시 그린다
+          @wait_last_remain = r
+          _redraw_wait(r)
+        end
+        (@myicons + @peericons).each(&:update)   # keep idle animations going
+        Graphics.update
+        Input.update
+        # Un-confirm only while time remains AND it wasn't a timeout auto-confirm.
+        if r > 0 && !@timed_out && Input.trigger?(Input::BACK)
+          pbPlayCancelSE
+          @waiting = false
+          return :reselect
+        end
+      end
     end
 
-    # 상대의 선출 종료까지 남은 시간(내 선출 시작 기준의 공유 마감 = 근사). 선출을
-    # 확정해도 이 카운트다운은 계속 흘러 상대가 얼마나 남았는지 보여준다.
+    # 상대의 선출 종료까지 남은 시간(공유 마감 기준). 선출을 확정해도 이 카운트다운은
+    # 계속 흘러 상대가 얼마나 남았는지 보여준다.
     def _wait_remain
       return @secs unless @sel_deadline
       r = (@sel_deadline - System.uptime).ceil
       r < 0 ? 0 : r
-    end
-
-    def update_wait
-      return unless @waiting
-      r = _wait_remain
-      if r != @wait_last_remain     # 1초 단위로만 다시 그린다
-        @wait_last_remain = r
-        _redraw_wait(r)
-      end
-      (@myicons + @peericons).each(&:update)   # keep idle animations going
     end
 
     def _redraw_wait(remain = @secs)

@@ -128,16 +128,26 @@ module ARNet
             status = _INTL("상대의 선출을 기다리는 중...")
             msgwin = pbCreateMessageWindow
             last_status = nil
+            s.submit_selection(picks)
           else
             sel_scene = ARNet::SelectionScene.new(s.format, mine, s.peer_party, n,
                                                   secs, $player.name, s.opponent_name)
-            picks = sel_scene.run
-            sel_scene.enter_wait   # keep decks/animations on screen until battle
+            # Blocking select → wait → (re-select) loop. run/wait_for_battle pump
+            # the session every frame so a peer disconnect aborts BOTH sides at
+            # once, and BACK during the wait un-confirms (timer keeps running).
+            loop do
+              picks = sel_scene.run(s)
+              break if picks == :aborted                # peer dropped mid-select
+              s.submit_selection(picks)
+              w = sel_scene.wait_for_battle(s)
+              break if w == :ready || w == :aborted     # battle starting / peer gone
+              s.retract_selection                       # BACK → re-open selection
+            end
+            # sel_scene stays alive (decks on screen) until pending_info launches
+            # the battle below, or the ensure block disposes it on abort.
           end
-          s.submit_selection(picks)
         end
       end
-      sel_scene.update_wait if sel_scene   # keep idle animations running while waiting
       if pending_info
         if sel_scene; sel_scene.dispose; sel_scene = nil; end
         begin; pbDisposeMessageWindow(msgwin); rescue Exception; end

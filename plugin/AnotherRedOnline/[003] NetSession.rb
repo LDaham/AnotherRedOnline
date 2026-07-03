@@ -80,6 +80,15 @@ module ARNet
       _maybe_battle_ready
     end
 
+    # Un-confirm a selection that hasn't started a battle yet (the peer hasn't
+    # also confirmed, so we're not :battle_ready). Clears both sides' pick state
+    # so _maybe_battle_ready can't fire on the stale picks while we re-select.
+    def retract_selection
+      return if @phase == :battle_ready
+      @local_picks = nil
+      send_battle({ "t" => "unselect" })
+    end
+
     # relay + FLUSH: push the frame to the socket immediately. Callers in the
     # lockstep often send and then run local animations before their next await,
     # so a buffered-only send would strand the message until much later (see
@@ -164,6 +173,10 @@ module ARNet
       when "selection"
         @peer_picks = data["picks"]
         _maybe_battle_ready
+      when "unselect"
+        # Peer un-confirmed before the battle started — drop their picks so we
+        # don't advance to :battle_ready until they re-select.
+        @peer_picks = nil
       when "abort"
         @error = "peer aborted: #{data["reason"]}"
         @error_code = data["reason"]   # e.g. "version" → friendly message in [011]

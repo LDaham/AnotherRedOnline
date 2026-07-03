@@ -335,9 +335,10 @@ end
 if defined?(Battle)
   class Battle
     unless method_defined?(:arnet_orig_pbThisEx)
-      alias_method :arnet_orig_pbThisEx,           :pbThisEx
-      alias_method :arnet_orig_pbMessagesOnReplace, :pbMessagesOnReplace
-      alias_method :arnet_orig_pbMessageOnRecall,   :pbMessageOnRecall
+      alias_method :arnet_orig_pbThisEx,             :pbThisEx
+      alias_method :arnet_orig_pbMessagesOnReplace,   :pbMessagesOnReplace
+      alias_method :arnet_orig_pbMessageOnRecall,     :pbMessageOnRecall
+      alias_method :arnet_orig_pbStartBattleSendOut,  :pbStartBattleSendOut
     end
     def pbThisEx(idxBattler, idxParty)
       return arnet_orig_pbThisEx(idxBattler, idxParty) unless $arnet_view_flip
@@ -392,6 +393,60 @@ if defined?(Battle)
       else
         owner = pbGetOwnerName(battler.index)
         pbDisplayBrief(_INTL("\\j[{1},이,가] \\j[{2},을,를] 넣었다!", owner, battler.name))
+      end
+    end
+
+    # First send-out at battle start. The engine keys the phrasing on raw side
+    # (side 0 = "가랏! X!", side 1 = "{owner} 내보냈다!"), which is inverted for the
+    # guest (whose own team is side 1). Rebuild the messages keyed on ACTUAL
+    # ownership so each player sees "가랏!" for their own mon and "내보냈다!" for the
+    # opponent's; choreography (opponent first) and pbSendOut animation are kept.
+    def pbStartBattleSendOut(sendOuts)
+      return arnet_orig_pbStartBattleSendOut(sendOuts) unless $arnet_view_flip
+      # "Want to battle" line — the challenger is side 0 (the host = our opponent).
+      challengers = @player
+      case challengers.length
+      when 1
+        pbDisplayPaused(_INTL("\\j[{1},이,가] 승부를 걸어왔다!", challengers[0].full_name))
+      when 2
+        pbDisplayPaused(_INTL("\\j[{1},과,와] \\j[{2},이,가] 승부를 걸어왔다!",
+                              challengers[0].full_name, challengers[1].full_name))
+      when 3
+        pbDisplayPaused(_INTL("{1}, {2}, 그리고 \\j[{3},이,가] 승부를 걸어왔다!",
+                              challengers[0].full_name, challengers[1].full_name,
+                              challengers[2].full_name))
+      end
+      # Opposing side (from our view) appears first, then ours — same as the engine.
+      [1, 0].each do |side|
+        msg = ""
+        toSendOut = []
+        trainers = (side == 0) ? @player : @opponent
+        trainers.each_with_index do |t, i|
+          sent = sendOuts[side][i]
+          next if sent.nil? || sent.empty?
+          names = sent.map { |idx| @battlers[idx].name }
+          msg += "\n" if msg.length > 0
+          if ARNet.render_own?(sent[0])   # our own Pokémon (engine's exact keys, so
+            case names.length             # the guest's line matches the host's wording)
+            when 1 then msg += _INTL("Go! {1}!", names[0])
+            when 2 then msg += _INTL("Go! {1} and {2}!", names[0], names[1])
+            when 3 then msg += _INTL("Go! {1}, {2} and {3}!", names[0], names[1], names[2])
+            end
+          else                            # opponent's Pokémon
+            case names.length
+            when 1 then msg += _INTL("\\j[{1},은,는] \\j[{2},을,를] 내보냈다!", t.full_name, names[0])
+            when 2 then msg += _INTL("\\j[{1},은,는] \\j[{2},과,와] \\j[{3},을,를] 내보냈다!",
+                                     t.full_name, names[0], names[1])
+            when 3 then msg += _INTL("\\j[{1},은,는] \\j[{2},과,와] \\j[{3},과,와] \\j[{4},을,를] 내보냈다!",
+                                     t.full_name, names[0], names[1], names[2])
+            end
+          end
+          toSendOut.concat(sent)
+        end
+        pbDisplayBrief(msg) if msg.length > 0
+        animSendOuts = []
+        toSendOut.each { |idxBattler| animSendOuts.push([idxBattler, @battlers[idxBattler].pokemon]) }
+        pbSendOut(animSendOuts, true)
       end
     end
   end
@@ -757,7 +812,7 @@ if defined?(Battle::Scene::Animation::TrainerFade)
   end
 end
 
-#--- 9) End-of-battle result perspective ---------------------------------------
+#--- 9) End-of-battle result perspective + clean WIN/LOSE banner ----------------
 # pbEndOfBattle prints the win/lose text AND plays the victory/defeat cue from
 # side0's (host's) point of view, so the guest would otherwise see the HOST's
 # result ("호스트와 게스트에게 동일하게 표시됨"). The simulation is canonical, so we
@@ -769,27 +824,69 @@ end
 #     result fanfare pbEndBattle plays.
 #   - pbGainMoney/pbLoseMoney are no-ops here (@internalBattle=false, moneyGain=false).
 #   - Draw (@decision==5) is symmetric, so it is left unchanged.
-# Gated on $arnet_view_flip (true only for the guest, around pbStartBattle).
+# For ONLINE battles we also (a) SILENCE the trainer sprite + "…" win/lose speech
+# ($arnet_end_quiet gates pbDisplayPaused/pbShowOpponent below — the NPC-trainer
+# speech is meaningless in PvP) and (b) show a clean WIN/LOSE/DRAW banner instead,
+# skipped only when the link dropped (:disconnect/:desync).
 if defined?(Battle)
   class Battle
     unless method_defined?(:arnet_orig_pbEndOfBattle)
       alias_method :arnet_orig_pbEndOfBattle, :pbEndOfBattle
     end
     def pbEndOfBattle
-      return arnet_orig_pbEndOfBattle unless $arnet_view_flip
-      canonical = @decision
-      @decision = 2 if canonical == 1   # host win  -> guest lost
-      @decision = 1 if canonical == 2   # host lost -> guest won
-      saved_player, saved_opponent = @player, @opponent
-      @player, @opponent = @opponent, @player   # local player = side1 (self)
-      begin
-        arnet_orig_pbEndOfBattle
-      ensure
-        @decision = canonical
-        @player   = saved_player
-        @opponent = saved_opponent
+      return arnet_orig_pbEndOfBattle unless (arnet_online? rescue @arnet)
+      if $arnet_view_flip
+        canonical = @decision
+        @decision = 2 if canonical == 1   # host win  -> guest lost
+        @decision = 1 if canonical == 2   # host lost -> guest won
+        saved_player, saved_opponent = @player, @opponent
+        @player, @opponent = @opponent, @player   # local player = side1 (self)
+        local = @decision
+        begin
+          $arnet_end_quiet = true
+          arnet_orig_pbEndOfBattle
+        ensure
+          $arnet_end_quiet = false
+          @decision = canonical
+          @player   = saved_player
+          @opponent = saved_opponent
+        end
+        (ARNet.show_battle_result(self, local) rescue nil)
+        return @decision
+      else
+        local = @decision                 # host: side0 view is already local
+        begin
+          $arnet_end_quiet = true
+          ret = arnet_orig_pbEndOfBattle
+        ensure
+          $arnet_end_quiet = false
+        end
+        (ARNet.show_battle_result(self, local) rescue nil)
+        return ret
       end
-      @decision
+    end
+  end
+
+  # Silence the NPC-trainer end-of-battle speech + sprite for online battles only
+  # (gated on $arnet_end_quiet, set solely around the pbEndOfBattle core above).
+  class Battle
+    unless method_defined?(:arnet_orig_pbDisplayPaused)
+      alias_method :arnet_orig_pbDisplayPaused, :pbDisplayPaused
+    end
+    def pbDisplayPaused(*args, &blk)
+      return if $arnet_end_quiet
+      arnet_orig_pbDisplayPaused(*args, &blk)
+    end
+  end
+  if defined?(Battle::Scene) && Battle::Scene.method_defined?(:pbShowOpponent)
+    class Battle::Scene
+      unless method_defined?(:arnet_orig_pbShowOpponent)
+        alias_method :arnet_orig_pbShowOpponent, :pbShowOpponent
+      end
+      def pbShowOpponent(*args, &blk)
+        return if $arnet_end_quiet
+        arnet_orig_pbShowOpponent(*args, &blk)
+      end
     end
   end
 end
@@ -863,5 +960,55 @@ if defined?(Battle::Scene)
       pbSelectBattler(-1)
       return ret
     end
+  end
+end
+
+#--- 11) Clean WIN / LOSE / DRAW banner ----------------------------------------
+# Shown at the very end of an online battle (from pbEndOfBattle above), replacing
+# the NPC-trainer speech/sprite. `decision` is already in the LOCAL player's
+# perspective (host = canonical, guest = flipped). Skipped when the link dropped
+# (:disconnect / :desync) — those end via a separate notice in [011].
+module ARNet
+  module_function
+
+  def show_battle_result(battle, decision)
+    reason = (battle.instance_variable_get(:@arnet_abort_reason) rescue nil)
+    return if reason == :disconnect || reason == :desync
+    case decision
+    when 1 then _result_banner(_INTL("WIN!"),  Color.new(255, 216, 64),  Color.new(120, 72, 0))
+    when 2 then _result_banner(_INTL("LOSE"),  Color.new(128, 176, 255), Color.new(24, 40, 88))
+    when 5 then _result_banner(_INTL("DRAW"),  Color.new(216, 216, 216), Color.new(56, 56, 56))
+    end
+  rescue
+    nil
+  end
+
+  def _result_banner(text, color, shadow)
+    vp  = Viewport.new(0, 0, Graphics.width, Graphics.height)
+    vp.z = 999_999
+    spr = Sprite.new(vp)
+    spr.bitmap = Bitmap.new(Graphics.width, Graphics.height)
+    b = spr.bitmap
+    (pbSetSystemFont(b) rescue nil)
+    cx = Graphics.width / 2
+    cy = Graphics.height / 2
+    band = 132
+    b.fill_rect(0, cy - band / 2, Graphics.width, band, Color.new(0, 0, 0, 170))
+    b.fill_rect(0, cy - band / 2,        Graphics.width, 3, color)
+    b.fill_rect(0, cy + band / 2 - 3,    Graphics.width, 3, color)
+    b.font.size = 72
+    pbDrawTextPositions(b, [[text, cx, cy - 44, :center, color, shadow, :outline]])
+    frames = 0
+    loop do
+      Graphics.update
+      Input.update
+      frames += 1
+      break if frames > 150   # ~2.5s at 60fps
+      break if frames > 24 && (Input.trigger?(Input::USE) || Input.trigger?(Input::BACK))
+    end
+  ensure
+    (spr.bitmap.dispose rescue nil)
+    (spr.dispose rescue nil)
+    (vp.dispose rescue nil)
   end
 end
