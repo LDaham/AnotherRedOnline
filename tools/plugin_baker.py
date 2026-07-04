@@ -44,6 +44,14 @@ class Sym:
     def __hash__(self): return hash(("sym", self.n))
     def __repr__(self): return ":" + self.n
 
+class RObj:
+    """A decoded Ruby object: class-name Sym + ivar dict (or user-marshal data)."""
+    def __init__(self):
+        self.cls = None; self.iv = {}; self.data = None
+    def __repr__(self):
+        c = self.cls.n if isinstance(self.cls, Sym) else self.cls
+        return "<%s %s>" % (c, sorted(self.iv))
+
 # ---------------------------------------------------------------------------
 # Minimal Marshal reader (subset: nil/true/false, int, symbol+symlink, array,
 # hash, string, ivar-wrapped string, object link)
@@ -96,6 +104,20 @@ class Reader:
             return h
         if ch == '"':
             n = self.long(); raw = self.read(n); self.objs.append(raw); return raw  # bytes
+        if ch == 'l':
+            sign = chr(self.byte())            # '+' or '-'
+            nwords = self.long()               # number of 16-bit words
+            n = 0
+            for k in range(nwords):
+                n |= self.byte() << (16*k)
+                n |= self.byte() << (16*k + 8)
+            return -n if sign == '-' else n
+        if ch == 'f':
+            n = self.long(); raw = self.read(n)
+            try:
+                return float(raw.decode('ascii'))
+            except Exception:
+                return raw
         if ch == 'I':
             base = self.obj()  # usually a '"' string (registered already)
             niv = self.long(); utf8 = False
@@ -105,6 +127,26 @@ class Reader:
             if isinstance(base, (bytes, bytearray)) and utf8:
                 return base.decode('utf-8')
             return base
+        if ch == 'o':
+            o = RObj(); self.objs.append(o)
+            o.cls = self.obj()                 # class name symbol
+            niv = self.long()
+            for _ in range(niv):
+                k = self.obj(); v = self.obj()
+                o.iv[k.n if isinstance(k, Sym) else k] = v
+            return o
+        if ch == 'e':                          # extended object: module then obj
+            self.obj(); return self.obj()
+        if ch == 'u':                          # user-defined (_load): class sym + raw bytes
+            o = RObj(); self.objs.append(o)
+            o.cls = self.obj(); n = self.long(); o.data = self.read(n); return o
+        if ch == 'U':                          # user-marshal: class sym, then data
+            o = RObj(); self.objs.append(o)
+            o.cls = self.obj(); o.data = self.obj(); return o
+        if ch == 'C':                          # subclass of builtin: sym, then obj
+            self.obj(); return self.obj()
+        if ch == '/':                          # regexp: string + options byte
+            n = self.long(); raw = self.read(n); self.byte(); self.objs.append(raw); return raw
         raise ValueError("unhandled marshal type %r at %d" % (ch, self.i-1))
 
 def parse_file(path):
