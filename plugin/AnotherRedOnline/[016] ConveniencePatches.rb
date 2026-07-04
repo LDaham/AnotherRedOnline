@@ -89,8 +89,11 @@ if defined?(PokemonSummary_Scene)
       :SPECIAL_DEFENSE => 222,
       :SPEED           => 254
     }
-    ARNET_EV_X   = 490   # right edge of the EV number
-    ARNET_STAR_X = 495   # left edge of the (shifted) IV star column
+    # Layout: stat value (right@408) | (416) EV (right@454) [IV star @456]
+    ARNET_STAT_X = 408   # right edge of the (redrawn) stat value
+    ARNET_SEP_X  = 416   # x position of the "|" separator
+    ARNET_EV_X   = 454   # right edge of the EV number
+    ARNET_STAR_X = 456   # left edge of the IV star column (flush with EV)
 
     unless method_defined?(:arnet_ev_orig_drawPageThree)
       alias_method :arnet_ev_orig_drawPageThree, :drawPageThree
@@ -104,15 +107,35 @@ if defined?(PokemonSummary_Scene)
       return if overlay.nil? || overlay.disposed?
 
       show_stars = !defined?(Settings::SUMMARY_IV_RATINGS) || Settings::SUMMARY_IV_RATINGS
-      # Wipe the strip to the right of the stat values (old IV stars live here).
-      overlay.fill_rect(463, 78, 49, 196, Color.new(0, 0, 0, 0)) if show_stars
+
+      # Wipe the stat-value + IV-star strip so we can redraw the layout.
+      # HP row gets a wider wipe (original "xxx/xxx" text extends to ~x=365);
+      # keep it above the HP bar (y=110) so the bar is preserved.
+      overlay.fill_rect(350, 78, 162, 28, Color.new(0, 0, 0, 0))
+      overlay.fill_rect(376, 106, 136, 168, Color.new(0, 0, 0, 0))
 
       base   = Color.new(64, 64, 64)
       shadow = Color.new(176, 176, 176)
+      sep_col = Color.new(144, 144, 144)
+      sep_shd = Color.new(200, 200, 200)
+
+      # Collect stat values per row (HP = totalhp only, no current/total).
+      stat_vals = {
+        :HP      => pkmn.totalhp.to_s,
+        :ATTACK  => pkmn.attack.to_s,  :DEFENSE => pkmn.defense.to_s,
+        :SPECIAL_ATTACK => pkmn.spatk.to_s, :SPECIAL_DEFENSE => pkmn.spdef.to_s,
+        :SPEED   => pkmn.speed.to_s
+      }
+
       textpos = []
       GameData::Stat.each_main do |s|
         y = ARNET_EV_STAT_Y[s.id]
         next if y.nil?
+        # Stat value (plain colour, no nature tinting)
+        textpos.push([stat_vals[s.id], ARNET_STAT_X, y, :right, base, shadow])
+        # "|" separator
+        textpos.push(["|", ARNET_SEP_X, y, :left, sep_col, sep_shd])
+        # EV value
         textpos.push([pkmn.ev[s.id].to_s, ARNET_EV_X, y, :right, base, shadow])
       end
 
@@ -121,7 +144,7 @@ if defined?(PokemonSummary_Scene)
       pbDrawTextPositions(overlay, textpos)
       overlay.font.size = old_size
 
-      # Redraw the IV stars in their new, shifted-right position.
+      # Redraw the IV stars flush with the EV column.
       pbDisplayIVRatings(pkmn, overlay, ARNET_STAR_X, 83) if show_stars
     end
   end

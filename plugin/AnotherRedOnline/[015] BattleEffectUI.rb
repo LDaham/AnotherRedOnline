@@ -101,7 +101,7 @@ module ARNet
   # --- floating tag sprite (target hints + stat popups) ------------------------
   # segments = [[text, color], ...] drawn left-to-right on a translucent bar.
   # Returns a Sprite (its private viewport rides along; fx_dispose frees both).
-  FX_TAG_FONT = 22
+  FX_TAG_FONT = 20
   def self.fx_bar_sprite(segments, z: 250000)
     scratch = Bitmap.new(1, 1)
     (pbSetSystemFont(scratch) rescue nil)
@@ -256,10 +256,16 @@ module ARNet
     spr.y  = mid_y
     if on_left
       spr.ox = spr.bitmap.width   # ally: grow left from the sprite centre
+      spr.x  = spr_p.x
+      # Clamp: ensure the left edge (x - ox) doesn't go off-screen
+      spr.x  = spr.ox if spr.x - spr.ox < 0
     else
       spr.ox = 0                  # foe: grow right from the sprite centre
+      spr.x  = spr_p.x
+      # Clamp: ensure the right edge (x + width) doesn't go off-screen
+      max_x  = Graphics.width - spr.bitmap.width
+      spr.x  = max_x if spr.x > max_x
     end
-    spr.x = spr_p.x
     spr
   rescue
     nil
