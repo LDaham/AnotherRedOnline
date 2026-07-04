@@ -57,6 +57,63 @@ async function testCodeRoom() {
   b.close();
 }
 
+async function testQuickMatch() {
+  const a = new TestClient(HOST, PORT);
+  const b = new TestClient(HOST, PORT);
+  await hello(a, 'Ash'); await hello(b, 'Gary');
+
+  const rsA = { level_cap: 50, iv_flat: 31 };
+  a.send({ t: 'quick_match', format: 'single3', mod_version: '0.1.0', ruleset: rsA });
+  const qa = await a.waitType('queued');
+  assert.strictEqual(qa.format, 'single3');
+  ok('first quick_match player is queued');
+
+  // Second player with the same format + mod_version pairs immediately.
+  b.send({ t: 'quick_match', format: 'single3', mod_version: '0.1.0',
+           ruleset: { level_cap: 99 } });
+  const ma = await a.waitType('matched');
+  const mb = await b.waitType('matched');
+  assert.strictEqual(ma.match_id, mb.match_id);
+  assert.strictEqual(ma.format, 'single3');
+  ok('same format + version quick_match pairs both peers');
+
+  // Server relays the WAITING player's ruleset to both, so hashes agree.
+  assert.deepStrictEqual(ma.ruleset, rsA);
+  assert.deepStrictEqual(mb.ruleset, rsA);
+  ok('quick_match relays the waiting player ruleset to both peers');
+
+  a.close(); b.close();
+}
+
+async function testQuickMatchGating() {
+  const a = new TestClient(HOST, PORT);
+  const b = new TestClient(HOST, PORT);
+  const c = new TestClient(HOST, PORT);
+  await hello(a, 'A'); await hello(b, 'B'); await hello(c, 'C');
+
+  // A waits on single3 / v0.1.0.
+  a.send({ t: 'quick_match', format: 'single3', mod_version: '0.1.0', ruleset: {} });
+  await a.waitType('queued');
+
+  // B has a DIFFERENT mod_version -> different queue, must not steal A's match.
+  b.send({ t: 'quick_match', format: 'single3', mod_version: '9.9.9', ruleset: {} });
+  await b.waitType('queued');
+  let bMatched = false;
+  b.waitType('matched', 400).then(() => { bMatched = true; }).catch(() => {});
+
+  // C matches A's version -> pairs with A (not B).
+  c.send({ t: 'quick_match', format: 'single3', mod_version: '0.1.0', ruleset: {} });
+  const ma = await a.waitType('matched');
+  const mc = await c.waitType('matched');
+  assert.strictEqual(ma.match_id, mc.match_id);
+  assert.strictEqual(ma.opponent.name, 'C');
+  await new Promise((r) => setTimeout(r, 450));
+  assert.strictEqual(bMatched, false);
+  ok('mod_version gates the queue (mismatched version never pairs)');
+
+  a.close(); b.close(); c.close();
+}
+
 async function testBadCode() {
   const a = new TestClient(HOST, PORT);
   await hello(a, 'Lost');
@@ -71,6 +128,8 @@ async function testBadCode() {
   try {
     await testCodeRoom();
     await testBadCode();
+    await testQuickMatch();
+    await testQuickMatchGating();
     console.log(`\nAll ${passed} checks passed.`);
     server.close();
     process.exit(0);

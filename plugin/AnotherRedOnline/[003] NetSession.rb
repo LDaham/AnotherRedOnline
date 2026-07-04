@@ -63,6 +63,20 @@ module ARNet
       @phase = :searching
     end
 
+    # Random matchmaking: join the shared quick-match queue for `format`. The server
+    # pairs us with the next waiting player on the SAME format + mod_version, then
+    # drives the identical `matched` flow as a code room (nonce side decision, seed,
+    # team exchange, lockstep). We send our default (ranked) ruleset; the server
+    # relays the waiting player's copy to both peers so ruleset_hash always agrees.
+    # on_queued(format) fires while we wait for an opponent.
+    def start_quick_match(format)
+      @format = format
+      @ruleset = ARNet.default_ruleset
+      @client.send_msg({ "t" => "quick_match", "format" => format,
+                         "mod_version" => ARNet::MOD_VERSION, "ruleset" => @ruleset })
+      @phase = :searching
+    end
+
     # --- battle-setup API (call after on_ready fires) ---
     # Send our full 6-mon team (serialized Hashes from ARNet::Team.party_to_data).
     def submit_team(team_data)
@@ -73,7 +87,6 @@ module ARNet
     end
 
     # For selection formats (single3/double4): send our chosen party indices.
-    # full6 needs no selection — skip this call.
     def submit_selection(picks)
       @local_picks = picks
       send_battle({ "t" => "selection", "picks" => picks })
@@ -97,9 +110,10 @@ module ARNet
     def close; @client.close; @phase = :closed; end
 
     # Override / set these procs to receive events.
-    #   on_room_created(code) / on_ready(side, seed) / on_peer_team(team_data)
-    #   on_battle_ready(info hash) / on_peer_msg(data) / on_peer_left(reason)
-    attr_accessor :on_room_created, :on_ready, :on_peer_team,
+    #   on_room_created(code) / on_queued(format) / on_ready(side, seed)
+    #   on_peer_team(team_data) / on_battle_ready(info hash) / on_peer_msg(data)
+    #   on_peer_left(reason)
+    attr_accessor :on_room_created, :on_queued, :on_ready, :on_peer_team,
                   :on_battle_ready, :on_peer_msg, :on_peer_left
 
     private
@@ -111,6 +125,9 @@ module ARNet
       when "room_created"
         @room_code = m["code"]
         on_room_created&.call(m["code"])
+      when "queued"
+        # Quick-match: waiting in the queue for an opponent (no room code).
+        on_queued&.call(m["format"])
       when "matched"
         @match_id = m["match_id"]
         @opponent_name = m.dig("opponent", "name")

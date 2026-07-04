@@ -42,7 +42,6 @@ module ARNet
   # Battle formats
   FORMAT_SINGLE3 = "single3"   # pick 3 of 6, single
   FORMAT_DOUBLE4 = "double4"   # pick 4 of 6, double
-  FORMAT_FULL6   = "full6"     # all 6, single
 
   def self.default_ruleset
     {
@@ -67,13 +66,15 @@ module ARNet
     case format
     when FORMAT_SINGLE3 then 3
     when FORMAT_DOUBLE4 then 4
-    else 6
+    else 3
     end
   end
 
   # Whether a format has a team-preview selection step (pick a subset of 6).
+  # Every current format brings a subset of the 6-mon pool, so this is always true;
+  # kept as a whitelist so an unknown format can't silently skip selection.
   def self.needs_selection?(format)
-    format != FORMAT_FULL6
+    format == FORMAT_SINGLE3 || format == FORMAT_DOUBLE4
   end
 
   # 32-byte random nonce as hex (used for seed derivation + side decision).

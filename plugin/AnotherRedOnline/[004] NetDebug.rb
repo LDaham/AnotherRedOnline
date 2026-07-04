@@ -9,7 +9,7 @@
 # then exchanges a couple of relay messages. Non-blocking; pumps for ~10s.
 #===============================================================================
 module ARNet
-  def self.selftest(host = ARNet::DEFAULT_HOST, port: ARNet::DEFAULT_PORT, room: nil, format: ARNet::FORMAT_FULL6)
+  def self.selftest(host = ARNet::DEFAULT_HOST, port: ARNet::DEFAULT_PORT, room: nil, format: ARNet::FORMAT_SINGLE3)
     s = ARNet::Session.new(host, port, name: "SelfTest")
     s.on_room_created = proc { |code| _log("room created: #{code}  (have peer join it)") }
     s.on_ready = proc { |side, seed| _log("HANDSHAKE OK  side=#{side} seed=#{seed}") }
@@ -52,7 +52,7 @@ module ARNet
   #   host:  ARNet.online_battle("SERVER_IP")               # prints room code
   #   guest: ARNet.online_battle("SERVER_IP", room: "ABCDE")
   # Uses $player.party as the team. For selection formats, auto-picks the first N.
-  def self.online_battle(host = ARNet::DEFAULT_HOST, port: ARNet::DEFAULT_PORT, room: nil, format: ARNet::FORMAT_FULL6)
+  def self.online_battle(host = ARNet::DEFAULT_HOST, port: ARNet::DEFAULT_PORT, room: nil, format: ARNet::FORMAT_SINGLE3)
     s = ARNet::Session.new(host, port, name: ($player ? $player.name : "Trainer"))
     pending_info = nil
 

@@ -47,22 +47,32 @@ module ARNet
       return
     end
 
-    begin
-      $arnet_force_upcase = true   # 방 코드 입력은 대문자만(실시간 변환)
-      code = pbMessageFreeText(
-        _INTL("상대의 방 코드를 입력하세요.\n새 방을 만들려면 빈칸으로 두고 확인하세요."),
-        "", false, 8)
-    ensure
-      $arnet_force_upcase = false
-    end
-    host_mode = (code.nil? || code.strip.empty?)
-    code = code.to_s.strip.upcase
+    # 진입 메뉴: 방 만들기 / 방 참가 / 랜덤 매칭.
+    mode = pbMessage(_INTL("온라인 대전 방식을 선택하세요."),
+                     [_INTL("방 만들기"), _INTL("방 참가"),
+                      _INTL("랜덤 매칭"), _INTL("취소")], 4)
+    return if mode < 0 || mode == 3
 
-    # Host chooses the ruleset up front; the guest inherits it from the room.
-    format = ARNet::FORMAT_FULL6
-    if host_mode
+    host_mode = (mode == 0)   # true=방 코드 발급, false=참가 or 랜덤
+    quick     = (mode == 2)   # 랜덤(퀵) 매칭
+    code      = ""
+    format    = ARNet::FORMAT_SINGLE3
+
+    if mode == 1
+      # 방 참가: 상대 방 코드 입력(실시간 대문자 변환).
+      begin
+        $arnet_force_upcase = true
+        code = pbMessageFreeText(_INTL("상대의 방 코드를 입력하세요."), "", false, 8)
+      ensure
+        $arnet_force_upcase = false
+      end
+      return if code.nil? || code.strip.empty?   # 취소 / 빈칸
+      code = code.strip.upcase
+    else
+      # 방 만들기 또는 랜덤 매칭: 대전 포맷을 먼저 선택한다.
+      # (랜덤은 같은 포맷 큐끼리만 매칭 — 서버 큐 키에 format 포함)
       format = ARNet.choose_format_ui
-      return if format.nil?   # cancelled at the format picker
+      return if format.nil?   # 포맷 선택에서 취소
     end
     s = nil
     pending_info = nil
@@ -77,7 +87,13 @@ module ARNet
     # 상태 텍스트는 콜백에서 갱신만 하고, 실제 표시는 폴링 루프에서 한다.
     # ★중요: 핸드셰이크 동안 s.update가 매 프레임 돌아야 하므로 여기서 블로킹
     #   pbMessage를 쓰면 안 된다(방 코드 표시 중 네트워크가 멈춰 시작이 지연됨).
-    status = host_mode ? _INTL("방을 만드는 중...") : _INTL("방에 입장하는 중...")
+    status = if quick
+               _INTL("매칭 상대를 찾는 중...")
+             elsif host_mode
+               _INTL("방을 만드는 중...")
+             else
+               _INTL("방에 입장하는 중...")
+             end
    begin
     # 온라인 대전은 항상 1.0배(실시간)로 진행 — 플레이어별 Delta Speed Up 배속 설정을
     # 무시하고 System.uptime이 실시간을 반환하게 한다(배틀 애니 속도 + 체스클록/선출
@@ -91,6 +107,9 @@ module ARNet
 
     s.on_room_created = proc { |c|
       status = _INTL("방 코드: {1}\n상대가 코드를 입력해 입장하면 자동으로 시작됩니다.\n(취소 키로 중단)", c)
+    }
+    s.on_queued = proc { |_fmt|
+      status = _INTL("매칭 상대를 찾는 중...\n(취소 키로 중단)")
     }
     s.on_ready = proc { |_side, _seed|
       status = _INTL("상대와 연결됨. 팀을 교환하는 중...")
@@ -119,7 +138,13 @@ module ARNet
       s.update
       if s.phase == :idle && !started
         started = true
-        host_mode ? s.create_room(format) : s.join_room(code)
+        if quick
+          s.start_quick_match(format)
+        elsif host_mode
+          s.create_room(format)
+        else
+          s.join_room(code)
+        end
       end
       if do_select
         do_select = false

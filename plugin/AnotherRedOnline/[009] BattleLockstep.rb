@@ -8,7 +8,7 @@
 # untouched and deterministically. End of each round we exchange a state checksum
 # to catch any desync immediately.
 #
-# SCOPE (v1): SINGLES only (full6 / single3 — one active battler per side).
+# SCOPE (v1): SINGLES only (single3 — one active battler per side).
 #   - Doubles (double4) needs multi-battler menu back-navigation + target sync. TODO.
 #   - Battle mechanics (Mega/Tera/Dynamax/Z) are DISABLED online until their toggles
 #     are transmitted — otherwise one peer megas and the other doesn't => desync.

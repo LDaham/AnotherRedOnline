@@ -13,7 +13,7 @@
 # the guest's side0 trainer being an NPCTrainer (no pokedex) never crashes, and
 # online battles never touch the player's real dex/save.
 #
-# SCOPE (v1): SINGLES (full6 / single3). See BattleLockstep scope notes.
+# SCOPE (v1): SINGLES (single3). See BattleLockstep scope notes.
 # Guest-side presentation is mirrored (guest views from side1's seat) — see [012];
 # the sim stays canonical (side0=host) so the lockstep is unaffected.
 # KNOWN REMAINING before real matches are fully correct:
@@ -133,7 +133,7 @@ module ARNet
   end
 
   # Select & order the battle party from the full 6 using selection indices.
-  # picks=nil (full6) => use all in original order.
+  # picks=nil => use all in original order (defensive; every format sends picks).
   def _apply_picks(full, picks)
     return full unless picks
     picks.map { |i| full[i] }.compact

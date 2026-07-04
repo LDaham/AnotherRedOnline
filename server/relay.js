@@ -2,10 +2,11 @@
 // Another Red Online — relay + code-room matchmaking server.
 // Pure Node `net`, no external deps. Runs on a tiny (free-tier) VPS. See PROTOCOL.md §3.
 //
-// Server is an *opaque relay*: it pairs two peers (by shared room code only) and
-// forwards their battle messages verbatim. Canonical side (host/guest) is decided
-// peer-to-peer via nonce comparison (PROTOCOL.md §4); the server only tracks who is
-// paired with whom. No random matchmaking, no result reporting, no stats DB.
+// Server is an *opaque relay*: it pairs two peers — by shared room code, or via the
+// random quick-match queue (same format + mod_version) — and forwards their battle
+// messages verbatim. Canonical side (host/guest) is decided peer-to-peer via nonce
+// comparison (PROTOCOL.md §4); the server only tracks who is paired with whom. No
+// result reporting, no stats DB.
 
 const net = require('net');
 const crypto = require('crypto');
@@ -16,6 +17,7 @@ const PROTO = 1;
 
 let nextClientId = 1;
 const rooms = new Map();          // code -> client (waiting host)
+const queues = new Map();         // "format|modver" -> [clients] (FIFO quick-match)
 const matches = new Map();        // matchId -> { a, b }
 
 function log(...a) { console.log(new Date().toISOString(), ...a); }
@@ -35,6 +37,10 @@ function genCode() {
   return code;
 }
 
+// Quick-match queue key: only pair players on the same format AND mod_version, so an
+// out-of-date client can never be matched into a battle it would abort in bhello.
+function qkey(format, modver) { return `${format}|${modver || ''}`; }
+
 function pair(a, b, format, ruleset) {
   const matchId = crypto.randomUUID();
   const m = { id: matchId, a, b, format, ruleset };
@@ -51,6 +57,12 @@ function pair(a, b, format, ruleset) {
 
 function leaveMatchmaking(client) {
   for (const [code, c] of rooms) if (c === client) rooms.delete(code);
+  // Also pull the client out of any quick-match queue it is waiting in.
+  for (const [key, q] of queues) {
+    const i = q.indexOf(client);
+    if (i !== -1) q.splice(i, 1);
+    if (q.length === 0) queues.delete(key);
+  }
 }
 
 function handle(client, msg) {
@@ -85,6 +97,32 @@ function handle(client, msg) {
       if (host === client) { send(client, { t: 'error', code: 'self', msg: 'cannot join own room' }); return; }
       rooms.delete(code);
       pair(host, client, host.format, host.ruleset);
+      break;
+    }
+
+    case 'quick_match': {
+      leaveMatchmaking(client);            // never double-queue / drop any stale room
+      client.format = msg.format;
+      client.ruleset = msg.ruleset;
+      const key = qkey(msg.format, msg.mod_version);
+      const q = queues.get(key) || [];
+      let opp = null;
+      while (q.length) {                    // take the next live waiter (skip dead sockets)
+        const c = q.shift();
+        if (c !== client && c.socket.writable) { opp = c; break; }
+      }
+      if (opp) {
+        if (q.length) queues.set(key, q); else queues.delete(key);
+        // Same mod_version (queue key) => identical default ruleset; reuse the waiting
+        // player's so both peers receive a byte-identical ruleset in `matched` and
+        // their ruleset_hash always agrees.
+        pair(opp, client, msg.format, opp.ruleset || msg.ruleset);
+      } else {
+        q.push(client);
+        queues.set(key, q);
+        send(client, { t: 'queued', format: msg.format });
+        log(`quick_match queued ${client.id} key=${key}`);
+      }
       break;
     }
 

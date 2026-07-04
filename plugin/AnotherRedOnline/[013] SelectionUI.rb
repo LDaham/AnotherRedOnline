@@ -1,7 +1,7 @@
 #===============================================================================
 # Another Red Online — format choice + graphical open-sheet selection (Phase A)
 #
-#   ARNet.choose_format_ui      -> host picks the ruleset (single3 / full6).
+#   ARNet.choose_format_ui      -> host picks the ruleset (single3 / double4).
 #   ARNet.run_selection_ui(...) -> two team decks (mine = blue, opponent =
 #     orange) built from reusable PokemonIconSprite icons, with the battle type +
 #     countdown clock in the middle column and a confirm button. Bring N of 6 on
