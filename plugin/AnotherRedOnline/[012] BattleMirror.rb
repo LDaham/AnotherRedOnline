@@ -229,6 +229,33 @@ if defined?(Battle::Scene)
   end
 end
 
+#--- 7b) Own-mon ball throw direction on the flipped view. PokeballPlayerSendOut
+# tracks the thrower's hand via @sprites["player_#{idxTrainer}"]. On the guest
+# view the seat roles are swapped by [012]'s trainer-sprite builder — "player_N"
+# holds the OPPONENT's far (right) sprite and "trainer_N" holds our own near
+# (left) sprite — so the ball was thrown from the far side, flying right→left.
+# Swap the two keys just for createProcesses so the throw originates from our own
+# near sprite (left→right). PokeballTrainerSendOut needs no fix: it makes the ball
+# appear at the flip-aware battler position and never tracks a trainer sprite. ---
+if defined?(Battle::Scene::Animation::PokeballPlayerSendOut)
+  class Battle::Scene::Animation::PokeballPlayerSendOut
+    unless method_defined?(:arnet_orig_psendout_cp)
+      alias_method :arnet_orig_psendout_cp, :createProcesses
+    end
+    def createProcesses
+      return arnet_orig_psendout_cp unless $arnet_view_flip
+      pk = "player_#{@idxTrainer}"
+      tk = "trainer_#{@idxTrainer}"
+      @sprites[pk], @sprites[tk] = @sprites[tk], @sprites[pk]
+      begin
+        arnet_orig_psendout_cp
+      ensure
+        @sprites[pk], @sprites[tk] = @sprites[tk], @sprites[pk]
+      end
+    end
+  end
+end
+
 #--- 2) Pokémon battler sprite: flip facing + the non-positional parity bits ----
 if defined?(Battle::Scene::BattlerSprite)
   class Battle::Scene::BattlerSprite
@@ -993,7 +1020,11 @@ module ARNet
     cx = Graphics.width / 2
     cy = Graphics.height / 2
     band = 132
-    b.fill_rect(0, cy - band / 2, Graphics.width, band, Color.new(0, 0, 0, 170))
+    # Opaque black over the WHOLE screen first, so the overworld map (the player
+    # standing in the Pokémon Center with the nurse NPC) isn't visible behind the
+    # result — just a clean black backdrop.
+    b.fill_rect(0, 0, Graphics.width, Graphics.height, Color.new(0, 0, 0, 255))
+    b.fill_rect(0, cy - band / 2, Graphics.width, band, Color.new(0, 0, 0, 255))
     b.fill_rect(0, cy - band / 2,        Graphics.width, 3, color)
     b.fill_rect(0, cy + band / 2 - 3,    Graphics.width, 3, color)
     b.font.size = 72

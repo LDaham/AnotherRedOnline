@@ -73,6 +73,7 @@ module ARNet
     sel_scene = nil            # graphical selection scene; kept alive through the
                                #   "waiting for opponent" phase until the battle starts
     field_bgm = nil            # PC/Center BGM to restore when the whole flow ends
+    last_status = nil          # declared here so on_ready's closure updates THIS var
     # 상태 텍스트는 콜백에서 갱신만 하고, 실제 표시는 폴링 루프에서 한다.
     # ★중요: 핸드셰이크 동안 s.update가 매 프레임 돌아야 하므로 여기서 블로킹
     #   pbMessage를 쓰면 안 된다(방 코드 표시 중 네트워크가 멈춰 시작이 지연됨).
@@ -93,13 +94,23 @@ module ARNet
     }
     s.on_ready = proc { |_side, _seed|
       status = _INTL("상대와 연결됨. 팀을 교환하는 중...")
+      # The host's previous status (room code) grew the window to 3 lines. If the
+      # peer's team arrives in the same s.update as this callback, the loop's
+      # resize is skipped before do_select disposes the window, so this 1-line
+      # message would render tiny at the top of the tall box. Resize + set it here
+      # so it's shown correctly regardless of timing.
+      if msgwin
+        pbBottomLeftLines(msgwin, 2)
+        msgwin.text = status
+        last_status = status
+      end
       s.submit_team(ARNet::Team.party_to_data($player.party))
     }
     # Peer team arrived — run the open-sheet selection UI from the polling loop
     # (NOT here: this callback runs inside s.update, and the UI blocks frames).
     s.on_peer_team = proc { |_peer_data| do_select = true }
     s.on_battle_ready = proc { |info| pending_info = info }
-    s.on_peer_left = proc { |_r| aborted = true; fail_msg = _INTL("상대가 나갔습니다.") }
+    s.on_peer_left = proc { |_r| aborted = true; fail_msg = _INTL("상대와의 연결이 끊겼습니다.") }
 
     started = false
     last_status = nil

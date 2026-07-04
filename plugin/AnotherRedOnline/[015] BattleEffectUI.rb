@@ -142,11 +142,21 @@ module ARNet
     scratch = Bitmap.new(1, 1)
     (pbSetSystemFont(scratch) rescue nil)
     scratch.font.size = FX_TAG_FONT
-    line_w = lines.map { |segs| segs.inject(0) { |s, (t, _)| s + scratch.text_size(t).width } }
+    # Per-column max width so segments align vertically down the box — e.g. every
+    # triangle starts at the same x even when the stat names differ in width
+    # (특수공격/특수방어/스피드).
+    ncol  = lines.map(&:length).max
+    col_w = Array.new(ncol, 0)
+    lines.each do |segs|
+      segs.each_with_index do |(t, _), ci|
+        tw = scratch.text_size(t).width
+        col_w[ci] = tw if tw > col_w[ci]
+      end
+    end
     scratch.dispose
     pad   = 8
     row_h = FX_TAG_FONT + pad
-    w = [line_w.max.to_i + pad * 2, 2].max
+    w = [col_w.inject(0, :+) + pad * 2, 2].max
     h = row_h * lines.length
     vp = Viewport.new(0, 0, Graphics.width, Graphics.height)
     vp.z = z
@@ -160,14 +170,12 @@ module ARNet
     bmp.fill_rect(0, h - 2, w, 2, Color.new(8, 8, 24, 220))
     lines.each_with_index do |segs, li|
       y0 = li * row_h + (pad / 2)
-      x  = pad
-      segs.each do |txt, col|
-        tw = bmp.text_size(txt).width
+      segs.each_with_index do |(txt, col), ci|
+        x = pad + col_w[0, ci].inject(0, :+)
         bmp.font.color = FX_COL_SHADOW
-        bmp.draw_text(x + 2, y0 + 2, tw + 4, FX_TAG_FONT, txt)
+        bmp.draw_text(x + 2, y0 + 2, col_w[ci] + 4, FX_TAG_FONT, txt)
         bmp.font.color = col
-        bmp.draw_text(x, y0, tw + 4, FX_TAG_FONT, txt)
-        x += tw
+        bmp.draw_text(x, y0, col_w[ci] + 4, FX_TAG_FONT, txt)
       end
     end
     spr.instance_variable_set(:@arnet_vp, vp)
