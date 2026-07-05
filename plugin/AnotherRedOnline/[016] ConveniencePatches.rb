@@ -12,8 +12,7 @@
 #      battle instead of being permanently consumed.
 #   2) The Summary stats page always shows each stat's EV, between the stat value
 #      and its IV star rating (no toggle key required).
-#   3) A "기술 배우기" (Relearn/Learn Move) command appears in the party menu,
-#      directly below "도구", whenever the highlighted Pokémon can learn a move.
+
 #   4) A Pokémon holding an Eviolite will not evolve (like an Everstone).
 #===============================================================================
 
@@ -150,28 +149,3 @@ if defined?(PokemonSummary_Scene)
   end
 end
 
-#-------------------------------------------------------------------------------
-# 3) "기술 배우기" command in the party menu, below "도구".
-#
-# The party menu is assembled from :party_menu MenuHandlers (도구/:item has
-# order 50), so we simply register another handler at order 55. It only appears
-# when the highlighted Pokémon actually has a move to learn, and the pool scales
-# with badge count exactly like the existing move tutor NPC — both are driven by
-# pbGetRelearnableMoves, which the Ultimate Move Tutor plugin defines globally.
-#-------------------------------------------------------------------------------
-if defined?(MenuHandlers)
-  MenuHandlers.add(:party_menu, :arnet_relearn, {
-    "name"      => _INTL("기술 배우기"),
-    "order"     => 55,
-    "condition" => proc { |_screen, party, party_idx|
-      pkmn = party[party_idx]
-      next false if !pkmn || pkmn.egg?
-      next pbGetRelearnableMoves(pkmn).length > 0
-    },
-    "effect"    => proc { |screen, party, party_idx|
-      pbRelearnMoveScreen(party[party_idx])
-      screen.pbRefreshSingle(party_idx)
-      next false
-    }
-  })
-end
