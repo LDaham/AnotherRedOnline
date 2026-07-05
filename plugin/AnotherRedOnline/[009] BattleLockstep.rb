@@ -217,6 +217,10 @@ class Battle
     mine = arnet_my_active_indices.map { |i| ARNet::Choices.choice_to_h(@choices[i], @battlers[i], i) }
     clk  = respond_to?(:arnet_clock_payload) ? arnet_clock_payload : nil
     @arnet.send_choices(@turnCount, mine, clk)
+    # The turn timer has stopped ticking (all local choices are committed); hide
+    # the frozen countdown so it doesn't linger during the wait + action phase.
+    # arnet_clock_hud_close in pbCommandPhase's ensure will safely no-op (nil guard).
+    arnet_clock_hud_close if respond_to?(:arnet_clock_hud_close)
     # Don't leave the screen frozen on the just-made move selection: show a
     # "waiting for opponent" banner while blocked on the peer's choices.
     arnet_waiting_hud_open

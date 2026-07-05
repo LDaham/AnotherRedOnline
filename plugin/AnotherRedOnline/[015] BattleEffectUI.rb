@@ -319,20 +319,85 @@ class Battle::Scene::FightMenu < Battle::Scene::MenuBase
 end
 
 #===============================================================================
-# (1b) Doubles: wrap the BATTLE-level target picker (has the chosen move). Note
-#      [012] wraps the SCENE-level pbChooseTarget — different method, no clash.
+# (1b) Doubles: wrap the BATTLE-level target picker to stash the current move,
+#      then wrap SCENE-level pbChooseTarget to pass it to the TargetMenu.
 #===============================================================================
 class Battle
   alias_method :arnet_fx_orig_pbChooseTarget, :pbChooseTarget
   def pbChooseTarget(battler, move, *args, &blk)
-    tags = (ARNet.fx_target_labels(self, battler, move) rescue [])
+    @arnet_fx_current_move = move
     begin
       arnet_fx_orig_pbChooseTarget(battler, move, *args, &blk)
     ensure
-      ARNet.fx_dispose(tags)
+      @arnet_fx_current_move = nil
     end
   end
+end
 
+class Battle::Scene
+  unless method_defined?(:arnet_fx_orig_pbChooseTarget)
+    alias_method :arnet_fx_orig_pbChooseTarget, :pbChooseTarget
+  end
+  def pbChooseTarget(idxBattler, target_data, visibleSprites = nil)
+    cw = @sprites["targetWindow"]
+    if cw
+      cw.instance_variable_set(:@arnet_fx_battler, @battle.battlers[idxBattler])
+      cw.instance_variable_set(:@arnet_fx_move, @battle.instance_variable_get(:@arnet_fx_current_move))
+      cw.instance_variable_set(:@arnet_fx_battle, @battle)
+    end
+    begin
+      arnet_fx_orig_pbChooseTarget(idxBattler, target_data, visibleSprites)
+    ensure
+      if cw
+        cw.instance_variable_set(:@arnet_fx_battler, nil)
+        cw.instance_variable_set(:@arnet_fx_move, nil)
+        cw.instance_variable_set(:@arnet_fx_battle, nil)
+      end
+    end
+  end
+end
+
+class Battle::Scene::TargetMenu
+  unless method_defined?(:arnet_fx_orig_refreshButtons)
+    alias_method :arnet_fx_orig_refreshButtons, :refreshButtons
+  end
+  def refreshButtons
+    arnet_fx_orig_refreshButtons
+    arnet_fx_draw_symbols
+  rescue
+  end
+
+  def arnet_fx_draw_symbols
+    battler = @arnet_fx_battler
+    move = @arnet_fx_move
+    battle = @arnet_fx_battle
+    return unless battler && move && battle && move.damagingMove?
+    
+    bmp = @overlay.bitmap
+    old_size = bmp.font.size
+    bmp.font.size = Battle::Scene::FightMenu::FX_SYM_FONT
+    text_pos = []
+    
+    @buttons.each_with_index do |button, i|
+      next if !button || nil_or_empty?(@texts[i])
+      foe = battle.battlers[i]
+      next if foe.nil? || foe.fainted?
+      next if foe.index == battler.index
+      
+      tier = ARNet.fx_effect_tier(ARNet.fx_move_mult(battler, move, foe))
+      next if tier.nil?
+      sym, _phrase, col = tier
+      
+      x = button.x - self.x + button.src_rect.width - Battle::Scene::FightMenu::FX_SYM_PADX
+      y = button.y - self.y + Battle::Scene::FightMenu::FX_SYM_PADY
+      text_pos.push([sym, x, y, :right, col, ARNet::FX_COL_SHADOW])
+    end
+    pbDrawTextPositions(bmp, text_pos) unless text_pos.empty?
+    bmp.font.size = old_size
+  end
+end
+
+class Battle
   #-----------------------------------------------------------------------------
   # (2) Show the stat popup for the duration of the StatUp/StatDown animation.
   #     Prefer @arnet_fx_stats (full list from a multi-stat move, precomputed so

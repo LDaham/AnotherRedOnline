@@ -918,6 +918,77 @@ if defined?(Battle)
   end
 end
 
+#--- 9b) TargetMenu button mirror (doubles): swap row/col for the guest ----------
+# The TargetMenu places even-index buttons on the BOTTOM row (player side) and
+# odd-index buttons on the TOP row (opponent side). The guest's battler sprites
+# and data boxes are already mirrored (section 1–8), but the target-selection
+# buttons are NOT — so the guest sees their own Pokémon buttons on the wrong row.
+# We patch initialize (Y+X positions) and refreshButtons (button colour type) to
+# swap even↔odd presentation when $arnet_view_flip is set. Display-only; the
+# canonical indices used for targeting are unchanged.
+if defined?(Battle::Scene::TargetMenu)
+  class Battle::Scene::TargetMenu
+    unless method_defined?(:arnet_orig_target_init)
+      alias_method :arnet_orig_target_init, :initialize
+    end
+    def initialize(viewport, z, sideSizes)
+      arnet_orig_target_init(viewport, z, sideSizes)
+      return unless $arnet_view_flip
+      # Reposition every button: swap the row (top↔bottom) and mirror the
+      # horizontal order within each side so the leftmost mon from the guest's
+      # perspective stays on the left.
+      @buttons.each_with_index do |button, i|
+        next unless button
+        numButtons = @sideSizes[i % 2]
+        # --- Y: swap top/bottom row ---
+        # Original: button.y = self.y + 6 + (BUTTON_HEIGHT - 4) * ((i + 1) % 2)
+        # Mirrored: flip the row selector ((i+1)%2 → i%2)
+        button.y = self.y + 6 + (BUTTON_HEIGHT - 4) * (i % 2)
+        # --- X: mirror horizontal order ---
+        # Original inc:  even → i/2,  odd → numButtons-1-(i/2)
+        # Mirrored inc:  even → numButtons-1-(i/2),  odd → i/2
+        inc = (i.even?) ? numButtons - 1 - (i / 2) : i / 2
+        if @smallButtons
+          base_x = self.x + 170 - [0, 82, 166][numButtons - 1]
+        else
+          base_x = self.x + 138 - [0, 116][numButtons - 1]
+        end
+        button.x = base_x + (button.src_rect.width - 4) * inc
+      end
+    end
+
+    unless method_defined?(:arnet_orig_refreshButtons)
+      alias_method :arnet_orig_refreshButtons, :refreshButtons
+    end
+    def refreshButtons
+      arnet_orig_refreshButtons
+      return unless $arnet_view_flip
+      # Fix button colour type: the base refreshButtons uses (i.even?) to pick
+      # player(1) vs opponent(2) colour. Under the flipped view the roles are
+      # swapped, so we redo the src_rect.y calculation with (i.odd?) instead.
+      @buttons.each_with_index do |button, i|
+        next unless button
+        buttonType = 0
+        if @texts[i]
+          buttonType = (i.odd?) ? 1 : 2   # swapped from original (i.even?)
+        end
+        buttonType = (2 * buttonType) + ((@smallButtons) ? 1 : 0)
+        button.src_rect.y = buttonType * BUTTON_HEIGHT
+      end
+      # Redraw text overlay since button positions differ from default.
+      @overlay.bitmap.clear
+      textpos = []
+      @buttons.each_with_index do |button, i|
+        next if !button || nil_or_empty?(@texts[i])
+        x = button.x - self.x + (button.src_rect.width / 2)
+        y = button.y - self.y + 14
+        textpos.push([@texts[i], x, y, :center, TEXT_BASE_COLOR, TEXT_SHADOW_COLOR])
+      end
+      pbDrawTextPositions(@overlay.bitmap, textpos)
+    end
+  end
+end
+
 #--- 10) Target selection (doubles): up/down is cross-side -----------------------
 # The guest's view is mirrored top<->bottom, so the core chooser's UP/DOWN branch
 # (which jumps to the OPPOSING side) feels inverted: from the guest's own row at
