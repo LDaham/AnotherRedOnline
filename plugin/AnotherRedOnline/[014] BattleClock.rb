@@ -162,18 +162,13 @@ class Battle
   end
 
   # decision: 1 = side0 wins, 2 = side0 loses, 5 = draw.
+  #
+  # Pokémon Champions balance ([018]): when the battle reaches time (here, both
+  # players exhaust their clocks), the match now ends in a DRAW — the surviving
+  # Pokémon count and remaining HP are no longer considered. (The single-side
+  # timeout above is our chess-clock loss rule and is unchanged; Champions has no
+  # per-side clock, so only this shared-timeout judgment maps to its rule.)
   def arnet_clock_tiebreak
-    a = arnet_side_survivors(0)
-    b = arnet_side_survivors(1)
-    return 1 if a[:count] > b[:count]
-    return 2 if a[:count] < b[:count]
-    # HP ratio via integer cross-multiply (avoid float divergence):
-    lhs = a[:hp] * b[:maxhp]
-    rhs = b[:hp] * a[:maxhp]
-    return 1 if lhs > rhs
-    return 2 if lhs < rhs
-    return 1 if a[:hp] > b[:hp]
-    return 2 if a[:hp] < b[:hp]
     5   # draw
   end
 

@@ -378,10 +378,14 @@ if defined?(Battle)
     # keys on pbOwnedByPlayer?; we swap the perspective for the guest. Original
     # wording preserved verbatim (display-only, not hashed).
     def pbMessagesOnReplace(idxBattler, idxParty)
-      return arnet_orig_pbMessagesOnReplace(idxBattler, idxParty) unless $arnet_view_flip
+      return arnet_orig_pbMessagesOnReplace(idxBattler, idxParty) unless arnet_online?
       party = pbParty(idxBattler)
       newPkmnName = party[idxParty].name
-      if party[idxParty].ability == :ILLUSION && !pbCheckGlobalAbility(:NEUTRALIZINGGAS)
+      # Illusion: the OWNER always sees their Pokémon's TRUE name; only the OPPONENT
+      # sees the disguise (the last-in-team name the engine shows for Illusion). The
+      # sprite still leads disguised — only the send-out text reveals the real name.
+      if !ARNet.render_own?(idxBattler) &&
+         party[idxParty].ability == :ILLUSION && !pbCheckGlobalAbility(:NEUTRALIZINGGAS)
         new_index = pbLastInTeam(idxBattler)
         newPkmnName = party[new_index].name if new_index >= 0 && new_index != idxParty
       end
@@ -429,9 +433,10 @@ if defined?(Battle)
     # ownership so each player sees "가랏!" for their own mon and "내보냈다!" for the
     # opponent's; choreography (opponent first) and pbSendOut animation are kept.
     def pbStartBattleSendOut(sendOuts)
-      return arnet_orig_pbStartBattleSendOut(sendOuts) unless $arnet_view_flip
-      # "Want to battle" line — the challenger is side 0 (the host = our opponent).
-      challengers = @player
+      return arnet_orig_pbStartBattleSendOut(sendOuts) unless arnet_online?
+      # "Want to battle" line — always the OPPONENT from the local view (the engine
+      # uses @opponent; for the guest that side is side 0 = the host, i.e. @player).
+      challengers = $arnet_view_flip ? @player : @opponent
       case challengers.length
       when 1
         pbDisplayPaused(_INTL("\\j[{1},이,가] 승부를 걸어왔다!", challengers[0].full_name))
@@ -451,15 +456,18 @@ if defined?(Battle)
         trainers.each_with_index do |t, i|
           sent = sendOuts[side][i]
           next if sent.nil? || sent.empty?
-          names = sent.map { |idx| @battlers[idx].name }
           msg += "\n" if msg.length > 0
-          if ARNet.render_own?(sent[0])   # our own Pokémon (engine's exact keys, so
-            case names.length             # the guest's line matches the host's wording)
+          if ARNet.render_own?(sent[0])   # our own Pokémon: the owner always sees the
+            # TRUE name (even a lead disguised by Illusion). Engine's exact keys, so the
+            # guest's line still matches the host's wording.
+            names = sent.map { |idx| @battlers[idx].pokemon.name }
+            case names.length
             when 1 then msg += _INTL("Go! {1}!", names[0])
             when 2 then msg += _INTL("Go! {1} and {2}!", names[0], names[1])
             when 3 then msg += _INTL("Go! {1}, {2} and {3}!", names[0], names[1], names[2])
             end
-          else                            # opponent's Pokémon
+          else                            # opponent's Pokémon: show the Illusion disguise
+            names = sent.map { |idx| @battlers[idx].name }
             case names.length
             when 1 then msg += _INTL("\\j[{1},은,는] \\j[{2},을,를] 내보냈다!", t.full_name, names[0])
             when 2 then msg += _INTL("\\j[{1},은,는] \\j[{2},과,와] \\j[{3},을,를] 내보냈다!",
