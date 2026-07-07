@@ -29,7 +29,7 @@ SRC = r"d:\Code\AnotherRedMulti\plugin\AnotherRedOnline"
 PLUGIN_NAME = "Another Red Online"
 META = {  # mirrors readMeta() output for our meta.txt (minus :scripts/:dir)
     "name": "Another Red Online",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "essentials": ["21.1"],     # ESSENTIALS -> array
     "credits": ["AnotherRedMulti"],  # CREDITS -> array
 }
