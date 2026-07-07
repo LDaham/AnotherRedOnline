@@ -58,6 +58,23 @@ module ARNet
     code      = ""
     format    = ARNet::FORMAT_SINGLE3
 
+    # 온라인 규칙 위반 팀(못 배우는 기술 등)은 매칭 큐 진입 전에 막는다.
+    # 상대도 수신 시 재검증하므로 이건 안내용이고, 실제 차단은 [003] 수신 검증이다.
+    bad = ARNet::Team.first_illegal($player.party)
+    if bad
+      pkmn, reason = bad
+      detail = case reason
+        when /\Aillegal move (\S+)/
+          mv = GameData::Move.try_get($1.to_sym)
+          _INTL("{1}은(는) {2}을(를) 배울 수 없습니다.", pkmn.name, (mv ? mv.name : $1))
+        when /\Aillegal ability/ then _INTL("{1}의 특성이 올바르지 않습니다.", pkmn.name)
+        when /\Aev /             then _INTL("{1}의 노력치가 규칙을 벗어났습니다.", pkmn.name)
+        else _INTL("{1}의 구성이 규칙에 맞지 않습니다.", pkmn.name)
+      end
+      pbMessage(_INTL("이 팀으로는 온라인 대전에 참가할 수 없습니다.\n{1}", detail))
+      return
+    end
+
     if mode == 1
       # 방 참가: 상대 방 코드 입력(실시간 대문자 변환).
       begin
@@ -207,8 +224,18 @@ module ARNet
         # 기술적 오류가 아니라 입력 실수이므로 알기 쉬운 문구로 안내한다.
         fail_msg = if !host_mode && (s.error_code == "no_room" || s.error_code == "self")
           _INTL("잘못된 코드입니다.")
+        elsif s.error_code == "outdated"
+          _INTL("사용 중인 버전이 오래되어 서버에 접속할 수 없습니다.\n최신 버전으로 업데이트한 뒤 다시 시도하세요.")
+        elsif s.error_code == "build_blocked"
+          _INTL("허용되지 않은 빌드입니다.\n변조되지 않은 정식 배포판으로 다시 시도하세요.")
         elsif s.error_code == "version"
           _INTL("모드 버전이 상대와 다릅니다.\n최신 버전으로 업데이트한 뒤 다시 시도하세요.")
+        elsif s.error_code == "build"
+          _INTL("모드 파일이 상대와 일치하지 않습니다.\n변조되지 않은 정식 배포판으로 다시 시도하세요.")
+        elsif s.error_code == "bad_team"
+          _INTL("내 팀이 대전 규칙에 맞지 않아 대전이 취소되었습니다.\n팀을 확인해 주세요.")
+        elsif s.error_code == "peer_bad_team"
+          _INTL("상대의 팀이 대전 규칙에 맞지 않아 대전이 취소되었습니다.")
         else
           _INTL("연결 오류: {1}", s.error.to_s)
         end

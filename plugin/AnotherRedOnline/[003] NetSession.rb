@@ -39,16 +39,23 @@ module ARNet
 
     def update
       @client.update
-      if @client.closed?
-        @phase = (@client.state == :error ? :error : :closed)
-        @error = @client.last_error
-        return
-      end
       if @client.connected? && !@hello_sent
-        @client.send_msg({ "t" => "hello", "proto" => ARNet::PROTO, "name" => @name })
+        # mver/bhash let the SERVER gate outdated/tampered builds at the door
+        # (global force-update / kill-switch floor) — P2P mver only compares the
+        # two peers, so two old clients would otherwise slip through ([020]/relay).
+        @client.send_msg({ "t" => "hello", "proto" => ARNet::PROTO, "name" => @name,
+                           "mver" => ARNet::MOD_VERSION, "bhash" => ARNet::Build.hash })
         @hello_sent = true
       end
+      # Drain buffered frames BEFORE reacting to a close, so a server error frame
+      # that arrived coalesced with the socket FIN (e.g. the version/build gate on
+      # hello) is still handled — otherwise we'd surface a generic "closed" and
+      # lose its error_code. Safe: @inbox holds already-parsed frames.
       @client.poll.each { |m| _on_message(m) }
+      if @client.closed? && @phase != :error && @phase != :closed
+        @phase = (@client.state == :error ? :error : :closed)
+        @error ||= @client.last_error
+      end
     end
 
     # --- matchmaking API (code-share only) ---
@@ -139,6 +146,7 @@ module ARNet
                       "nonce" => @nonce, "gender" => @gender,
                       "ttype" => (@trainer_type ? @trainer_type.to_s : nil),
                       "mver" => ARNet::MOD_VERSION,
+                      "bhash" => ARNet::Build.hash,
                       "ruleset_hash" => ARNet.ruleset_hash(@ruleset) })
       when "peer_msg"
         _on_peer(m["data"])
@@ -163,6 +171,16 @@ module ARNet
           send_battle({ "t" => "abort", "reason" => "version" })
           return
         end
+        # Build integrity: reject tampered/mismatched builds up front (the lockstep
+        # checksum is the backstop). Fail-open when either side's hash is nil — a
+        # file we couldn't read must never block an otherwise-legit match.
+        my_bh = ARNet::Build.hash
+        if my_bh && data["bhash"] && data["bhash"] != my_bh
+          @error = "build hash mismatch (me #{my_bh}, peer #{data["bhash"]})"
+          @error_code = "build"; @phase = :error
+          send_battle({ "t" => "abort", "reason" => "build" })
+          return
+        end
         if data["ruleset_hash"] != ARNet.ruleset_hash(@ruleset)
           @error = "ruleset mismatch"; @phase = :error
           send_battle({ "t" => "abort", "reason" => "ruleset" })
@@ -181,7 +199,8 @@ module ARNet
           on_peer_team&.call(data["mons"])
           _maybe_battle_ready
         else
-          @error = "peer team invalid: #{res}"; @phase = :error
+          @error = "peer team invalid: #{res}"
+          @error_code = "peer_bad_team"; @phase = :error
           send_battle({ "t" => "abort", "reason" => "bad_team" })
         end
       when "team_ok"

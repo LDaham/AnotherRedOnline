@@ -15,6 +15,50 @@ const { encode, FrameDecoder } = require('./protocol');
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8787;
 const PROTO = 1;
 
+// --- version / build gate (global force-update + kill-switch lever) ------------
+// All env-tuned and DEFAULT-OFF, so a fresh deploy blocks nobody. This is the
+// server "floor": P2P mver ([003] bhello) only compares the two peers, so two
+// equally-outdated clients slip past it — the server is the only place that can
+// enforce a global minimum. Clients self-report `mver`/`bhash` in `hello`, so
+// this stops casual/outdated clients, not a determined reverser (documented).
+//   MIN_MOD_VERSION      e.g. "0.2.0"  — reject anything older (null = no floor)
+//   BLOCKED_VERSIONS     e.g. "0.1.3,0.1.4" — targeted kill-switch for bad builds
+//   ALLOWED_BUILD_HASHES e.g. "ab12..,cd34.." — allowlist of known-good [020] hashes
+//                        (empty = allow all; a client reporting null is not blocked)
+const MIN_MOD_VERSION = process.env.MIN_MOD_VERSION || null;
+const csv = (s) => (s || '').split(',').map((x) => x.trim()).filter(Boolean);
+const BLOCKED_VERSIONS = new Set(csv(process.env.BLOCKED_VERSIONS));
+const ALLOWED_BUILD_HASHES = new Set(csv(process.env.ALLOWED_BUILD_HASHES));
+
+// Numeric dotted-version compare: -1 / 0 / 1. Missing/short parts count as 0.
+function cmpVersion(a, b) {
+  const pa = String(a || '').split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = String(b || '').split('.').map((n) => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d !== 0) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+// Reason this client may not matchmake, or null if allowed. build_hash checks are
+// fail-open on a null hash (mirrors the client's [020] fail-open philosophy).
+function gateReason(client) {
+  const v = client.modVersion;
+  if (MIN_MOD_VERSION && (v == null || cmpVersion(v, MIN_MOD_VERSION) < 0)) {
+    return { code: 'outdated', msg: `update required (min ${MIN_MOD_VERSION})` };
+  }
+  if (v != null && BLOCKED_VERSIONS.has(v)) {
+    return { code: 'outdated', msg: `version ${v} is blocked` };
+  }
+  if (ALLOWED_BUILD_HASHES.size && client.buildHash != null &&
+      !ALLOWED_BUILD_HASHES.has(client.buildHash)) {
+    return { code: 'build_blocked', msg: 'build not allowed' };
+  }
+  return null;
+}
+
 let nextClientId = 1;
 const rooms = new Map();          // code -> client (waiting host)
 const queues = new Map();         // "format|modver" -> [clients] (FIFO quick-match)
@@ -66,17 +110,34 @@ function leaveMatchmaking(client) {
 }
 
 function handle(client, msg) {
+  // A gated client's socket is being closed; ignore anything it races in before
+  // the FIN (defense-in-depth beyond the hello gate).
+  if (client.blocked && msg.t !== 'ping') {
+    send(client, { t: 'error', code: client.blocked.code, msg: client.blocked.msg });
+    return;
+  }
   switch (msg.t) {
-    case 'hello':
+    case 'hello': {
       client.proto = msg.proto;
       client.name = (msg.name || 'Trainer').toString().slice(0, 24);
+      client.modVersion = (msg.mver != null) ? String(msg.mver) : null;
+      client.buildHash = (msg.bhash != null) ? String(msg.bhash) : null;
       if (msg.proto !== PROTO) {
         send(client, { t: 'error', code: 'proto', msg: `server proto ${PROTO}` });
         client.socket.end();
         return;
       }
+      const gate = gateReason(client);
+      if (gate) {
+        client.blocked = gate;
+        send(client, { t: 'error', code: gate.code, msg: gate.msg });
+        log(`reject ${client.id} ${gate.code} v=${client.modVersion} bh=${client.buildHash}`);
+        client.socket.end();
+        return;
+      }
       send(client, { t: 'hello_ok', proto: PROTO });
       break;
+    }
 
     case 'create_room': {
       leaveMatchmaking(client);
@@ -150,6 +211,7 @@ const server = net.createServer((socket) => {
   const client = {
     id: nextClientId++, socket, dec: new FrameDecoder(),
     name: 'Trainer', proto: null, peer: null, match: null,
+    modVersion: null, buildHash: null, blocked: null,
   };
   log(`conn ${client.id} from ${socket.remoteAddress}`);
 

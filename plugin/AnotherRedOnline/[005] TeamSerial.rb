@@ -16,10 +16,17 @@ module ARNet
   module Team
     module_function
 
-    # Strict move-legality (level-up/tutor/egg/prevo union) rejects illegal
-    # movesets. Off by default because TM/transfer moves aren't covered yet and
-    # would false-reject legit sets; when off, illegal moves are logged not blocked.
-    STRICT_MOVES = false
+    # Strict move-legality: reject any move outside the species' legal pool
+    # (level-up ∪ tutor ∪ egg ∪ prevolution chain — see legal_move_pool).
+    #
+    # This is a SUPERSET of the engine's own learn predicate: in this build TM/HM
+    # teaching is gated by Pokemon#compatible_with_move? (= tutor ∪ level-up ∪ egg,
+    # 263_Item_Utilities.rb:719 / 273_Pokemon.rb:708), i.e. there is NO separate TM
+    # pool. So there is no "TM gap": anything a Pokémon can legitimately know in
+    # this game is in the pool → zero false positives. The opponent re-runs this on
+    # the received team, so an edited/impossible mon is rejected regardless of how
+    # it was built (data tampering included).
+    STRICT_MOVES = true
 
     # Ordered main-stat ids (:HP, :ATTACK, ...). Built once from GameData.
     def stat_ids
@@ -65,6 +72,19 @@ module ARNet
     # Array<Pokemon> -> Array<Hash>
     def party_to_data(party)
       party.compact.map { |pkmn| pokemon_to_h(pkmn) }
+    end
+
+    # Pre-flight self-check. Returns [pkmn, reason] for the first party member
+    # whose serialized form fails validation, or nil if the whole party is legal.
+    # Lets us warn the LOCAL player (naming the mon/move) before entering the
+    # matchmaking queue. This is UX only — the opponent re-validates on receive
+    # ([003]), which is the actual anti-cheat guard (no trust in self-report).
+    def first_illegal(party, ruleset = ARNet.default_ruleset)
+      party.compact.each do |pkmn|
+        ok, reason = validate_h(pokemon_to_h(pkmn), ruleset)
+        return [pkmn, reason] unless ok
+      end
+      nil
     end
 
     #--- validate -------------------------------------------------------------
@@ -119,8 +139,9 @@ module ARNet
     end
 
     # Union of level-up (all levels) + tutor + egg moves, including the prevolution
-    # chain. NOTE: TM/HM and transfer moves are NOT covered yet (known gap) — that's
-    # why STRICT_MOVES defaults off. Hardening item for a later phase.
+    # chain. This equals-or-exceeds the engine's own compatible_with_move? predicate
+    # (which also gates TM/HM teaching in this build), so it needs no separate TM
+    # pool and produces no false positives — see the STRICT_MOVES note above.
     def legal_move_pool(species, form = 0)
       pool = []
       seen = {}
