@@ -3,7 +3,7 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 from plugin_baker import Reader, Sym, RObj
 
-GAME = os.path.join('tmp', 'Pokemon Another Red_PWT_250821')
+GAME = os.path.join('tmp', 'Pokemon Another Red 테스트 버전')
 
 def load(fn):
     data = open(os.path.join(GAME, 'Data', fn), 'rb').read()

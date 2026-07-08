@@ -111,7 +111,11 @@ if defined?(PokemonSummary_Scene)
       # HP row gets a wider wipe (original "xxx/xxx" text extends to ~x=365);
       # keep it above the HP bar (y=110) so the bar is preserved.
       overlay.fill_rect(350, 78, 162, 28, Color.new(0, 0, 0, 0))
-      overlay.fill_rect(376, 106, 136, 168, Color.new(0, 0, 0, 0))
+      # The lower wipe (Attack..Speed rows) MUST start below the HP bar. The base
+      # drawPageThree draws the bar at x=360, y=110, height=6 (so y=110..116) and
+      # it extends to x=456 — inside this wipe's x-range. Starting at y=106 (as we
+      # used to) erased the bar's right half; start at y=118 to preserve it.
+      overlay.fill_rect(376, 118, 136, 156, Color.new(0, 0, 0, 0))
 
       base   = Color.new(64, 64, 64)
       shadow = Color.new(176, 176, 176)

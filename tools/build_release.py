@@ -31,7 +31,7 @@ import zipfile
 
 HERE   = os.path.dirname(os.path.abspath(__file__))
 ROOT   = os.path.dirname(HERE)
-GAME   = os.path.join(ROOT, "tmp", "Pokemon Another Red_PWT_250821")
+GAME   = os.path.join(ROOT, "tmp", "Pokemon Another Red 테스트 버전")
 RXDATA = os.path.join(GAME, "Data", "PluginScripts.rxdata")
 ASSETS = os.path.join(ROOT, "plugin", "AnotherRedOnline", "assets")
 META   = os.path.join(ROOT, "plugin", "AnotherRedOnline", "meta.txt")

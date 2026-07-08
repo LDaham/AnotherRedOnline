@@ -69,6 +69,8 @@ module ARNet
           _INTL("{1}은(는) {2}을(를) 배울 수 없습니다.", pkmn.name, (mv ? mv.name : $1))
         when /\Aillegal ability/ then _INTL("{1}의 특성이 올바르지 않습니다.", pkmn.name)
         when /\Aev /             then _INTL("{1}의 노력치가 규칙을 벗어났습니다.", pkmn.name)
+        when /\Aduplicate species/ then _INTL("같은 종류의 포켓몬을 중복해서 넣을 수 없습니다. ({1})", pkmn.name)
+        when /\Aduplicate item/    then _INTL("같은 도구는 하나만 지닐 수 있습니다. ({1})", pkmn.name)
         else _INTL("{1}의 구성이 규칙에 맞지 않습니다.", pkmn.name)
       end
       pbMessage(_INTL("이 팀으로는 온라인 대전에 참가할 수 없습니다.\n{1}", detail))

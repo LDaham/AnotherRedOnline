@@ -14,7 +14,7 @@ module ARNet
   # refuse to battle across different mod versions: differing battle logic would
   # desync mid-match. Distribution is a manual Release zip (no auto-updater), so
   # a mismatch is possible — bump this together with meta.txt on every release.
-  MOD_VERSION = "0.1.1"
+  MOD_VERSION = "0.1.2"
   MAX_FRAME   = 64 * 1024
   DEFAULT_PORT = 8787
   # 배포한 VPS 릴레이의 공인 IP(또는 도메인). 서버를 띄운 뒤 이 한 줄만 바꾸면 된다.
@@ -47,10 +47,9 @@ module ARNet
     {
       "level_cap"      => 50,    # all mons normalized to Lv50 (battle-only)
       "iv_flat"        => 31,    # all IVs forced to 31 / 6V (battle-only)
-      "item_clause"    => false,
-      "sleep_clause"   => true,
-      "species_clause" => true,
-      "bag_items"      => false,
+      "item_clause"    => true,    # no two mons may hold the same item (enforced in [005])
+      "species_clause" => true,    # no duplicate species on a team (enforced in [005])
+      "bag_items"      => false,   # bag disabled during battle (enforced in [009])
       # Chess-clock time controls (seconds). time_bank = per-player total that
       # only ticks during turn selection; time_select = one-off team-preview
       # selection budget; time_turn = per-turn cap (auto-picks a move at 0).

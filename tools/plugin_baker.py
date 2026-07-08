@@ -22,14 +22,14 @@ Usage:
 """
 import sys, os, zlib, io
 
-GAME = r"d:\Code\AnotherRedMulti\tmp\Pokemon Another Red_PWT_250821"
+GAME = r"d:\Code\AnotherRedMulti\tmp\Pokemon Another Red 테스트 버전"
 RXDATA = os.path.join(GAME, "Data", "PluginScripts.rxdata")
 SRC = r"d:\Code\AnotherRedMulti\plugin\AnotherRedOnline"
 
 PLUGIN_NAME = "Another Red Online"
 META = {  # mirrors readMeta() output for our meta.txt (minus :scripts/:dir)
     "name": "Another Red Online",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "essentials": ["21.1"],     # ESSENTIALS -> array
     "credits": ["AnotherRedMulti"],  # CREDITS -> array
 }

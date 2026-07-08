@@ -80,9 +80,57 @@ module ARNet
     # matchmaking queue. This is UX only — the opponent re-validates on receive
     # ([003]), which is the actual anti-cheat guard (no trust in self-report).
     def first_illegal(party, ruleset = ARNet.default_ruleset)
-      party.compact.each do |pkmn|
+      mons = party.compact
+      mons.each do |pkmn|
         ok, reason = validate_h(pokemon_to_h(pkmn), ruleset)
         return [pkmn, reason] unless ok
+      end
+      # Team-wide clauses: return the offending (second-occurrence) mon so the
+      # local pre-check UI can name it. Mirrors team_clause_violation exactly.
+      if ruleset["species_clause"]
+        seen = {}
+        mons.each do |pkmn|
+          key = pkmn.species.to_s
+          return [pkmn, "duplicate species"] if seen[key]
+          seen[key] = true
+        end
+      end
+      if ruleset["item_clause"]
+        seen = {}
+        mons.each do |pkmn|
+          it = pkmn.item_id
+          next if it.nil?
+          key = it.to_s
+          return [pkmn, "duplicate item"] if seen[key]
+          seen[key] = true
+        end
+      end
+      nil
+    end
+
+    #--- team-wide clauses ----------------------------------------------------
+    # Species/item clauses checked on the SERIALIZED hashes, so host and guest
+    # evaluate an identical team representation. Returns a reason String or nil.
+    # This is the authoritative guard: the receiver re-runs it on the peer's
+    # team, so it needs no trust in the sender.
+    def team_clause_violation(arr, ruleset = ARNet.default_ruleset)
+      if ruleset["species_clause"]
+        seen = {}
+        arr.each do |h|
+          key = h["species"].to_s
+          return "duplicate species #{key}" if seen[key]
+          seen[key] = true
+        end
+      end
+      if ruleset["item_clause"]
+        seen = {}
+        arr.each do |h|
+          it = h["item"]
+          next if it.nil? || it.to_s.empty?
+          key = it.to_s
+          return "duplicate item #{key}" if seen[key]
+          seen[key] = true
+        end
       end
       nil
     end
@@ -142,6 +190,25 @@ module ARNet
     # chain. This equals-or-exceeds the engine's own compatible_with_move? predicate
     # (which also gates TM/HM teaching in this build), so it needs no separate TM
     # pool and produces no false positives — see the STRICT_MOVES note above.
+    # Moves a form change GRANTS that live in NO form's learnset, so the per-form
+    # lookup below can't see them. Mirror of the base game's MultipleForms handlers
+    # (280_FormHandlers.rb). Keyed species => { form => [moves] }.
+    #
+    # Only Rotom and Necrozma need this: their signature moves are in no learnset.
+    # Calyrex/Kyurem keep theirs IN each form's learnset (per-form lookup covers
+    # them), and Zacian/Meloetta/Aegislash/etc. only gain their signature move
+    # DURING battle and revert on leaving, so a serialized (out-of-battle) team
+    # never holds them. A mon in form F may legally hold ONLY form F's granted
+    # move(s): base form 0 forgets them on reverting (verified: Rotom/Necrozma/
+    # Calyrex onSetForm forget on form 0), so a form-0 mon holding a signature
+    # move stays illegal — this is what catches edit-mons (e.g. a plain Rotom
+    # carrying Overheat + Hydro Pump).
+    FORM_GRANTED_MOVES = {
+      :ROTOM    => { 1 => [:OVERHEAT], 2 => [:HYDROPUMP], 3 => [:BLIZZARD],
+                     4 => [:AIRSLASH], 5 => [:LEAFSTORM] },
+      :NECROZMA => { 1 => [:SUNSTEELSTRIKE], 2 => [:MOONGEISTBEAM] }
+    }
+
     def legal_move_pool(species, form = 0)
       pool = []
       seen = {}
@@ -150,6 +217,7 @@ module ARNet
         sp = stack.pop
         next if seen[sp]
         seen[sp] = true
+        # Per-form learnset: a mon may only hold moves its OWN form can learn.
         data = GameData::Species.get_species_form(sp, form) || GameData::Species.get(sp)
         next unless data
         data.moves.each { |lvl, mid| pool << mid }     # [level, move_id]
@@ -162,6 +230,10 @@ module ARNet
           end
         end
       end
+      # Add the move(s) the CURRENT form gains via form change (absent from every
+      # learnset). Only this form's — so a wrong-form or multi-signature mon fails.
+      granted = FORM_GRANTED_MOVES[species]
+      pool.concat(granted[form]) if granted && granted[form]
       pool.uniq
     end
 
@@ -221,6 +293,8 @@ module ARNet
         ok, why = validate_h(h, ruleset)
         return [false, "mon #{i + 1}: #{why}"] unless ok
       end
+      why = team_clause_violation(arr, ruleset)
+      return [false, why] if why
       party = arr.map { |h| h_to_pokemon(h, ruleset) }
       [true, party]
     end
