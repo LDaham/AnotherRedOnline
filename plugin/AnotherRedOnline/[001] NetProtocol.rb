@@ -14,7 +14,7 @@ module ARNet
   # refuse to battle across different mod versions: differing battle logic would
   # desync mid-match. Distribution is a manual Release zip (no auto-updater), so
   # a mismatch is possible — bump this together with meta.txt on every release.
-  MOD_VERSION = "0.1.2"
+  MOD_VERSION = "0.1.3"
   MAX_FRAME   = 64 * 1024
   DEFAULT_PORT = 8787
   # 배포한 VPS 릴레이의 공인 IP(또는 도메인). 서버를 띄운 뒤 이 한 줄만 바꾸면 된다.

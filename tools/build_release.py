@@ -32,7 +32,10 @@ import zipfile
 HERE   = os.path.dirname(os.path.abspath(__file__))
 ROOT   = os.path.dirname(HERE)
 GAME   = os.path.join(ROOT, "tmp", "Pokemon Another Red 테스트 버전")
+DATA   = os.path.join(GAME, "Data")
 RXDATA = os.path.join(GAME, "Data", "PluginScripts.rxdata")
+sys.path.insert(0, HERE)
+import patch_maps   # EV-training NPC menu injection (needs rgss_marshal.py)
 ASSETS = os.path.join(ROOT, "plugin", "AnotherRedOnline", "assets")
 META   = os.path.join(ROOT, "plugin", "AnotherRedOnline", "meta.txt")
 OUTDIR = os.path.join(ROOT, "dist")
@@ -61,6 +64,12 @@ def main():
     if not os.path.exists(RXDATA):
         raise SystemExit("baked rxdata missing: %s" % RXDATA)
 
+    # Inject the "노력치 조정" (EV training) choice into every Pokémon Center
+    # extra-service NPC menu (idempotent), then collect those maps so the release
+    # ships them — the menu is inline map-event data, not a script hook.
+    _touched, _branches = patch_maps.apply_all(DATA, write=True)
+    service_maps = patch_maps.service_map_paths(DATA)
+
     ver = read_version()
     os.makedirs(OUTDIR, exist_ok=True)
     zpath = os.path.join(OUTDIR, "AnotherRedOnline_v%s.zip" % ver)
@@ -78,6 +87,11 @@ def main():
                 rel = os.path.relpath(full, ASSETS).replace(os.sep, "/")
                 z.write(full, rel)
                 entries.append(rel)
+        # 3) patched Pokémon Center maps (carry the injected EV-training choice)
+        for mp in service_maps:
+            rel = "Data/" + os.path.basename(mp)
+            z.write(mp, rel)
+            entries.append(rel)
 
     print("built %s (%d bytes)" % (zpath, os.path.getsize(zpath)))
     for n in entries:

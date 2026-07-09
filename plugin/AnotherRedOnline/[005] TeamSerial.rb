@@ -138,6 +138,13 @@ module ARNet
     #--- validate -------------------------------------------------------------
     # Returns [ok(bool), reason(String|nil)]. Existence/counts/EV/ability are hard
     # rejects; move legality is soft unless STRICT_MOVES (see note above).
+    # Champions-style stat budget (66 SP × 8 EV each) raises the online EV ceilings
+    # so teams built with the in-game EV trainer ([022] EVTraining) validate:
+    #   32 SP/stat = 256 EV  (engine cap 252),  66 SP total = 528 EV (engine cap 510).
+    # Both peers use these identical constants (baked shared build) → deterministic.
+    ONLINE_EV_STAT_LIMIT = 256
+    ONLINE_EV_LIMIT      = 528
+
     def validate_h(h, ruleset = ARNet.default_ruleset)
       return [false, "not a hash"] unless h.is_a?(Hash)
       sp = h["species"]
@@ -178,10 +185,10 @@ module ARNet
       ev_total = 0
       stat_ids.each do |sid|
         e = h.dig("ev", sid.to_s) || 0
-        return [false, "ev out of range"] unless e.is_a?(Integer) && e >= 0 && e <= Pokemon::EV_STAT_LIMIT
+        return [false, "ev out of range"] unless e.is_a?(Integer) && e >= 0 && e <= ONLINE_EV_STAT_LIMIT
         ev_total += e
       end
-      return [false, "ev total > #{Pokemon::EV_LIMIT}"] if ev_total > Pokemon::EV_LIMIT
+      return [false, "ev total > #{ONLINE_EV_LIMIT}"] if ev_total > ONLINE_EV_LIMIT
 
       [true, nil]
     end
@@ -223,11 +230,17 @@ module ARNet
         data.moves.each { |lvl, mid| pool << mid }     # [level, move_id]
         pool.concat(data.tutor_moves) if data.respond_to?(:tutor_moves)
         pool.concat(data.egg_moves)   if data.respond_to?(:egg_moves)
-        # walk to prevolutions
-        if data.respond_to?(:get_evolutions)
-          data.get_evolutions(true).each do |evo|   # [species, method, param, is_prevo]
-            stack << evo[0] if evo[3]
-          end
+        # Walk the prevolution chain so evolved mons inherit egg/prevo-only moves
+        # (e.g. Grimmsnarl legally holding Impidimp's egg move Parting Shot).
+        # NOTE: get_evolutions(true) does NOT yield prevolutions — the engine always
+        # skips evo[3] entries and returns only [species, method, param] (no is_prevo
+        # flag), so the old `evo[3]` walk was a no-op. get_previous_species is the
+        # engine's canonical prevolution accessor; walk it one step per species.
+        if data.respond_to?(:get_previous_species)
+          prevo = data.get_previous_species
+          stack << prevo if prevo && prevo != sp
+        elsif data.respond_to?(:evolutions)
+          data.evolutions.each { |evo| stack << evo[0] if evo[3] }
         end
       end
       # Add the move(s) the CURRENT form gains via form change (absent from every
@@ -266,7 +279,7 @@ module ARNet
       # IV/EV — level & IV are FORCED (anti-cheat); transmitted values ignored for IV.
       stat_ids.each do |sid|
         pkmn.iv[sid] = iv_flat ? iv_flat : (h.dig("iv", sid.to_s) || 0).to_i.clamp(0, Pokemon::IV_STAT_LIMIT)
-        pkmn.ev[sid] = (h.dig("ev", sid.to_s) || 0).to_i.clamp(0, Pokemon::EV_STAT_LIMIT)
+        pkmn.ev[sid] = (h.dig("ev", sid.to_s) || 0).to_i.clamp(0, ONLINE_EV_STAT_LIMIT)
       end
 
       pkmn.happiness = (h["happiness"] || 70).to_i.clamp(0, 255)

@@ -10,8 +10,10 @@
 # Implemented here:
 #   1) Single-use held items (Focus Sash / berries / Gems …) are refunded after
 #      battle instead of being permanently consumed.
-#   2) The Summary stats page always shows each stat's EV, between the stat value
-#      and its IV star rating (no toggle key required).
+#   2) The Summary stats page always shows each stat's EV — displayed the Pokémon
+#      Champions way, as SP (Stat Points: 1 SP = 8 EV, capped 32/stat, 66 total)
+#      rather than the raw 0-252 EV number — between the stat value and its IV
+#      star rating (no toggle key required).
 
 #   4) A Pokémon holding an Eviolite will not evolve (like an Everstone).
 #===============================================================================
@@ -62,7 +64,7 @@ class Pokemon
 end
 
 #-------------------------------------------------------------------------------
-# 2) Always show EVs on the Summary stats page.
+# 2) Always show EVs on the Summary stats page — as Champions-style SP.
 #
 # The stats page (page_skills -> drawPageThree) draws, per stat: the name on the
 # left, the actual stat value right-aligned at x=456, and — via the Enhanced
@@ -70,6 +72,11 @@ end
 # free horizontal room between the value and the stars, so we shift the IV stars
 # a little further right (x=495) and slot the EV number into the gap (x=490),
 # giving the requested order: value / EV / IV stars.
+#
+# The number shown is the Pokémon Champions SP value (AREVTrain.ev_to_sp: raw EV
+# divided by 8, rounded, capped at 32 per stat), so it matches the EV-training
+# service ([022]) and the "66 total" budget the player allocates there. AREVTrain
+# is referenced only at draw time (runtime), so [022] loading after [016] is fine.
 #
 # This file is baked into the plugin bundle that loads LAST, so this alias wraps
 # the whole drawPageThree chain (base -> Dynamax -> Enhanced UI). By the time it
@@ -138,8 +145,9 @@ if defined?(PokemonSummary_Scene)
         textpos.push([stat_vals[s.id], ARNET_STAT_X, y, :right, base, shadow])
         # "|" separator
         textpos.push(["|", ARNET_SEP_X, y, :left, sep_col, sep_shd])
-        # EV value
-        textpos.push([pkmn.ev[s.id].to_s, ARNET_EV_X, y, :right, base, shadow])
+        # EV value, shown Champions-style as SP (1 SP = 8 EV, capped 32/stat).
+        sp = defined?(AREVTrain) ? AREVTrain.ev_to_sp(pkmn.ev[s.id]) : pkmn.ev[s.id]
+        textpos.push([sp.to_s, ARNET_EV_X, y, :right, base, shadow])
       end
 
       old_size = overlay.font.size
