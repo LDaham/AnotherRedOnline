@@ -57,6 +57,20 @@ module ARNet
     end
   end
 
+  # If `target` is disguised by the Illusion ability, return the DISPLAYED
+  # Pokémon's types (what the player sees), else nil. The Illusion effect holds
+  # the party Pokémon the battler is masquerading as; its types are the ones the
+  # opponent should reason about. Returns nil once the illusion has broken.
+  def self.fx_illusion_types(target)
+    return nil unless target
+    ill = (target.effects[PBEffects::Illusion] rescue nil)
+    return nil unless ill
+    t = (ill.types rescue nil)
+    (t.is_a?(Array) && !t.empty?) ? t : nil
+  rescue
+    nil
+  end
+
   # Type multiplier of `move` (as `user` would use it) against `target`, or nil
   # when no hint should be shown (non-damaging move, no/fainted target, error).
   def self.fx_move_mult(user, move, target)
@@ -66,10 +80,21 @@ module ARNet
     mtype = (move.pbCalcType(user) rescue nil)
     mtype = move.type if mtype.nil?
     return nil if mtype.nil?
-    raw = (move.pbCalcTypeMod(mtype, user, target) rescue nil)
-    return nil if raw.nil?
     norm = (Effectiveness::NORMAL_EFFECTIVE_MULTIPLIER.to_f rescue 1.0)
     norm = 1.0 if norm <= 0
+    # Against an Illusion-disguised FOE, compute effectiveness from the DISPLAYED
+    # types only — pbCalcTypeMod would read the real body's types (e.g. Zoroark =
+    # Dark) and leak the disguise ("super effective" on a mon that shouldn't be).
+    # Only for opposing targets: a disguise doesn't hide anything from its own
+    # side, and the real types give the accurate damage hint when you (rarely)
+    # aim a damaging move at your own Illusion ally in a double battle.
+    dtypes = (target.opposes?(user) rescue true) ? fx_illusion_types(target) : nil
+    if dtypes
+      raw = (Effectiveness.calculate(mtype, *dtypes) rescue nil)
+      return raw.nil? ? nil : raw.to_f / norm
+    end
+    raw = (move.pbCalcTypeMod(mtype, user, target) rescue nil)
+    return nil if raw.nil?
     raw.to_f / norm
   end
 
@@ -473,6 +498,56 @@ if defined?(Battle::Move::TargetMultiStatDownMove) &&
         arnet_fx_orig_pbEffectAgainstTarget(user, target)
       ensure
         (@battle.instance_variable_set(:@arnet_fx_stats, prev) rescue nil) unless rows.empty?
+      end
+    end
+  end
+end
+
+#===============================================================================
+# (3) DBK Enhanced Battle UI — Move Info window (SPECIAL key) type-effectiveness
+#     icons. The stock pbDrawTypeEffectiveness resolves displayPokemon (the
+#     disguise) only for the "unknown species" check, then computes the icon
+#     from b.pbTypes(true) — the REAL body — so an Illusion-disguised Zoroark
+#     leaks its true typing here (e.g. reads super-effective to a Fighting move).
+#     This is the base-game path, present in single AND online (host's view), and
+#     is NOT one of the methods [023] mirrors, so patch it here.
+#
+#     Recompute effectiveness from the DISPLAYED types for disguised foes. To
+#     stay safe against future DBK changes we only take over when a disguised foe
+#     is actually on the field; otherwise defer entirely to the original.
+#===============================================================================
+if defined?(Battle::Scene) && Battle::Scene.method_defined?(:pbDrawTypeEffectiveness)
+  class Battle::Scene
+    alias_method :arnet_fx_orig_pbDrawTypeEffectiveness, :pbDrawTypeEffectiveness
+    def pbDrawTypeEffectiveness(xpos, ypos, move, type, imagePos)
+      disguised = (@battle.allBattlers.any? { |b|
+        b && b.index.odd? && ARNet.fx_illusion_types(b)
+      } rescue false)
+      return arnet_fx_orig_pbDrawTypeEffectiveness(xpos, ypos, move, type, imagePos) unless disguised
+      idx = 0
+      @battle.allBattlers.each do |b|
+        next if b.index.even?
+        if b && !b.fainted? && move.category < 2
+          poke = b.displayPokemon
+          unknown_species = $player.pokedex.battled_count(poke.species) == 0 && !$player.pokedex.owned?(poke.species)
+          unknown_species = false if Settings::SHOW_TYPE_EFFECTIVENESS_FOR_NEW_SPECIES
+          unknown_species = true if b.celestial?
+          # Disguised foe -> use the displayed Pokémon's types, not the real body.
+          dtypes = (ARNet.fx_illusion_types(b) rescue nil)
+          value = dtypes ? Effectiveness.calculate(type, *dtypes) : Effectiveness.calculate(type, *b.pbTypes(true))
+          if unknown_species                             then effct = 0
+          elsif b.tera? && type == :STELLAR              then effct = 3
+          elsif Effectiveness.ineffective?(value)        then effct = 1
+          elsif Effectiveness.not_very_effective?(value) then effct = 2
+          elsif Effectiveness.super_effective?(value)    then effct = 3
+          else effct = 4
+          end
+          imagePos.push([@path + "move_effectiveness", Graphics.width - 64 - (idx * 64), ypos - 76, effct * 64, 0, 64, 76])
+          @sprites["info_icon#{b.index}"].visible = true
+        else
+          @sprites["info_icon#{b.index}"].visible = false
+        end
+        idx += 1
       end
     end
   end
