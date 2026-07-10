@@ -35,7 +35,8 @@ GAME   = os.path.join(ROOT, "tmp", "Pokemon Another Red 테스트 버전")
 DATA   = os.path.join(GAME, "Data")
 RXDATA = os.path.join(GAME, "Data", "PluginScripts.rxdata")
 sys.path.insert(0, HERE)
-import patch_maps   # EV-training NPC menu injection (needs rgss_marshal.py)
+import patch_maps            # EV-training NPC menu injection (needs rgss_marshal.py)
+import patch_common_events   # strip taxi "mash B" message (obsoleted by plugin [024])
 ASSETS = os.path.join(ROOT, "plugin", "AnotherRedOnline", "assets")
 META   = os.path.join(ROOT, "plugin", "AnotherRedOnline", "meta.txt")
 OUTDIR = os.path.join(ROOT, "dist")
@@ -70,6 +71,10 @@ def main():
     _touched, _branches = patch_maps.apply_all(DATA, write=True)
     service_maps = patch_maps.service_map_paths(DATA)
 
+    # Remove the "공중날기 택시" contact's obsolete "mash B to exit" message from
+    # CommonEvents.rxdata (plugin [024] now auto-closes the menus). Idempotent.
+    patch_common_events.apply(DATA, write=True)
+
     ver = read_version()
     os.makedirs(OUTDIR, exist_ok=True)
     zpath = os.path.join(OUTDIR, "AnotherRedOnline_v%s.zip" % ver)
@@ -92,6 +97,10 @@ def main():
             rel = "Data/" + os.path.basename(mp)
             z.write(mp, rel)
             entries.append(rel)
+        # 4) patched CommonEvents (taxi "mash B" message removed)
+        ce_path = patch_common_events.common_events_path(DATA)
+        z.write(ce_path, "Data/CommonEvents.rxdata")
+        entries.append("Data/CommonEvents.rxdata")
 
     print("built %s (%d bytes)" % (zpath, os.path.getsize(zpath)))
     for n in entries:
