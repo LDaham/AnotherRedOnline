@@ -176,9 +176,18 @@ module ARNet
       end
       if STRICT_MOVES
         pool = legal_move_pool(species, form)
-        moves.each do |m|
-          mid = m["id"].to_sym
-          return [false, "illegal move #{mid}"] unless pool.include?(mid)
+        # Smeargle (루브도라) permanently copies almost any move via Sketch, so its
+        # legal pool is effectively every move. Detect a Sketch learner (or Smeargle
+        # by id) and skip the pool check: move existence is already validated above,
+        # and Sketch's only uncopiable moves (Sketch itself, Struggle) are no threat
+        # in a serialized team. Without this, an online Smeargle carrying any
+        # Sketched move would be rejected as "illegal move".
+        can_sketch_any = (species == :SMEARGLE) || pool.include?(:SKETCH)
+        unless can_sketch_any
+          moves.each do |m|
+            mid = m["id"].to_sym
+            return [false, "illegal move #{mid}"] unless pool.include?(mid)
+          end
         end
       end
 
