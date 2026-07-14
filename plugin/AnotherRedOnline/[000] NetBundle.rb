@@ -15,6 +15,28 @@ begin; require 'digest';      rescue Exception; end
 begin; require 'digest/sha2'; rescue Exception; end
 
 #-------------------------------------------------------------------------------
+# Shared log directory. Every ARNet debug/telemetry file (battle-event dumps,
+# chess-clock trace, exception log, bundle self-test) goes under ONE folder in
+# the game directory instead of scattering *.log / *.txt into the root.
+# ARNet.log_path(name) creates the folder on demand and returns the full path;
+# on any failure (e.g. mkxp filesystem quirk) it falls back to the bare filename
+# so logging can never crash the game. Defined here in [000] so all later files
+# (and this file's own self-test below) can use it.
+#-------------------------------------------------------------------------------
+module ARNet
+  LOG_DIR = "ARNet_Logs".freeze
+
+  def self.log_path(filename)
+    begin
+      Dir.mkdir(LOG_DIR) unless Dir.exist?(LOG_DIR)
+      return File.join(LOG_DIR, filename) if Dir.exist?(LOG_DIR)
+    rescue Exception
+    end
+    filename
+  end
+end
+
+#-------------------------------------------------------------------------------
 # Minimal, dependency-free JSON (RFC 8259 subset sufficient for our protocol).
 #-------------------------------------------------------------------------------
 unless defined?(JSON)
@@ -286,7 +308,7 @@ begin
   _fails << "securerandom" unless SecureRandom.hex(8).length == 16
   unless _fails.empty?
     begin
-      File.open("arnet_bundle.txt", "wb") do |f|
+      File.open(ARNet.log_path("arnet_bundle.txt"), "wb") do |f|
         f.write("BUNDLE_SELFTEST_FAIL fields=#{_fails.join(',')}\n")
         f.write("generate=#{JSON.generate(_fixture)}\n")
       end
@@ -294,6 +316,6 @@ begin
   end
 rescue Exception => _e
   begin
-    File.open("arnet_bundle.txt", "wb") { |f| f.write("BUNDLE_SELFTEST_CRASH #{_e.class}: #{_e.message}\n") }
+    File.open(ARNet.log_path("arnet_bundle.txt"), "wb") { |f| f.write("BUNDLE_SELFTEST_CRASH #{_e.class}: #{_e.message}\n") }
   rescue Exception; end
 end

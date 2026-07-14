@@ -103,7 +103,9 @@ class Battle
           # first battler: nothing to go back to; just re-show the menu
         when 0   # Fight
           if pbFightMenu(idx)
-            arnet_strip_mechanics(idx)
+            # Keep any battle-gimmick registration: it is synced to the peer in
+            # arnet_exchange_choices (h["g"]) and re-applied via apply_gimmick, so
+            # both peers transform identically. (Timeout auto-pick still strips.)
             return true
           end
         when 1   # Bag — disabled
@@ -159,7 +161,7 @@ class Battle
   # 저장해 두었다가 close에서 복구(다음 실제 메시지가 덮어쓰지만 안전하게).
   def arnet_waiting_hud_open
     return if @arnet_waiting_hud
-    spr = (@scene.instance_variable_get(:@sprites) rescue nil)
+    spr = ((arnet_real_scene || @scene).instance_variable_get(:@sprites) rescue nil)
     mw  = spr && spr["messageWindow"]
     return unless mw   # 메시지 창을 못 찾으면 배너 생략(대기 자체는 정상 동작)
     cmd = spr["commandWindow"]
@@ -184,7 +186,7 @@ class Battle
     txt, vis, lbl, box, cmd_vis = @arnet_waiting_saved
     @arnet_waiting_saved = nil
     begin
-      spr = (@scene.instance_variable_get(:@sprites) rescue nil)
+      spr = ((arnet_real_scene || @scene).instance_variable_get(:@sprites) rescue nil)
       mw.letterbyletter = lbl
       mw.text           = txt
       mw.visible        = vis
@@ -194,27 +196,61 @@ class Battle
     end
   end
 
-  # Mechanics aren't synced in v1 — defensively clear any registered toggle so the
-  # local sim matches the peer (who likewise won't trigger one).
+  # Battle gimmicks (Mega/Terastallize/Dynamax/Z-Move/Ultra Burst) ARE synced
+  # online: arnet_exchange_choices attaches the registered mechanic as h["g"] and
+  # the peer re-registers it via ARNet::Choices.apply_gimmick, so both peers run
+  # the same canonical transform. So we no longer hide the buttons.
+  #
+  # This strip is used ONLY by the clock's timeout auto-pick ([014]): a forced
+  # auto-choice carries no gimmick, so we must clear any pending (not-yet-executed)
+  # registration cleanly. pbUnregisterAllSpecialActions reverts a PENDING Dynamax/Z
+  # move-swap via display_base_moves but leaves an already-active transform intact
+  # (it checks pbRegistered*? which is false once executed).
   def arnet_strip_mechanics(idx)
-    pbUnregisterMegaEvolution(idx) if respond_to?(:pbUnregisterMegaEvolution)
-    %i[pbUnregisterTerastallize pbUnregisterDynamax pbUnregisterZMove pbUnregisterUltraBurst].each do |m|
-      send(m, idx) if respond_to?(m)
+    if respond_to?(:pbUnregisterAllSpecialActions)
+      pbUnregisterAllSpecialActions(idx)
+    else
+      pbUnregisterMegaEvolution(idx) if respond_to?(:pbUnregisterMegaEvolution)
     end
   end
 
-  # Disable Mega availability online (button hidden) — see scope note.
-  alias_method :arnet_orig_pbCanMegaEvolve?, :pbCanMegaEvolve?
-  def pbCanMegaEvolve?(idxBattler)
-    return false if arnet_online?
-    arnet_orig_pbCanMegaEvolve?(idxBattler)
+  # Ordered so the FIRST registered match wins (a battler registers at most one).
+  ARNET_GIMMICKS = %i[mega tera ultra dynamax zmove]
+
+  # Gimmick ELIGIBILITY online. The guest's team is side1 (an NPCTrainer), so the
+  # stock possession checks take the trainer-item branch (pbGetOwnerItems) — the
+  # guest has no trainer-side band/ring/orb, so the buttons never appear for them
+  # (host side0 works because it reads $bag). Online we drop the trainer key-item
+  # requirement: eligibility then rests only on each Pokémon's own canonical
+  # capability (hasMega?/hasDynamax? / Tera type / held Z-Crystal / etc.), which is
+  # identical on both peers. Symmetric (canonical) -> no desync; each peer simply
+  # sees the buttons for the side it controls. The attack phase fires off the
+  # synced REGISTRATION (@mega/@dynamax/...), not this check, so it is display-only.
+  # (pbHasZRing? gates BOTH Z-Move and Ultra Burst.)
+  %i[pbHasMegaRing? pbHasDynamaxBand? pbHasTeraOrb? pbHasZRing?].each do |meth|
+    next unless method_defined?(meth)
+    orig = :"arnet_orig_#{meth.to_s.chomp('?')}"
+    alias_method orig, meth
+    define_method(meth) do |idxBattler|
+      next true if arnet_online?
+      send(orig, idxBattler)
+    end
   end
 
   #=============================================================================
   # Choice exchange
   #=============================================================================
   def arnet_exchange_choices
-    mine = arnet_my_active_indices.map { |i| ARNet::Choices.choice_to_h(@choices[i], @battlers[i], i) }
+    mine = arnet_my_active_indices.map do |i|
+      h = ARNet::Choices.choice_to_h(@choices[i], @battlers[i], i)
+      # Attach any registered battle gimmick so the peer re-applies it (only move
+      # choices can carry one; a battler registers at most one mechanic).
+      if h["a"] == "move" && respond_to?(:pbBattleMechanicIsRegistered?)
+        mech = ARNET_GIMMICKS.find { |m| pbBattleMechanicIsRegistered?(i, m) }
+        h["g"] = mech.to_s if mech
+      end
+      h
+    end
     clk  = respond_to?(:arnet_clock_payload) ? arnet_clock_payload : nil
     @arnet.send_choices(@turnCount, mine, clk)
     # The turn timer has stopped ticking (all local choices are committed); hide

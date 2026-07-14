@@ -50,7 +50,10 @@ module ARNet
   end
 
   # Under the guest's flipped view, battler index N is presented in seat N^1.
-  def self.pres_index(i); $arnet_view_flip ? (i ^ 1) : i; end
+  # $arnet_suppress_flip temporarily disables the seat flip so a full-screen
+  # overlay (the gimmick transformation cinematics, section 7c) can use
+  # pbBattlerPosition as a FIXED screen anchor that stays identical on both peers.
+  def self.pres_index(i); ($arnet_view_flip && !$arnet_suppress_flip) ? (i ^ 1) : i; end
 
   # True if index `i` should render as the LOCAL/near side (bottom seat, back
   # sprite, own data box, player-style send-out, no "opposing" text prefix).
@@ -69,6 +72,17 @@ module ARNet
   class MirrorBattler
     def initialize(battler); @arnet_b = battler; end
     def index;              @arnet_b.index ^ 1; end
+    # opposes? drives the data box's in-box icon POSITIONS (shiny star, primal /
+    # mega icon, owned pokéball) — see draw_shiny_icon/draw_special_form_icon/
+    # draw_owned_icon, which place them via `@battler.opposes?`. Those must follow
+    # the FLIPPED seat like everything else in the box, but the engine's opposes?
+    # reads the real @index, so delegating it (method_missing) leaves the icons on
+    # the canonical side (guest sees their own shiny star on the foe box, etc.).
+    # Compute it from OUR flipped index instead. Display-only; never hashed.
+    def opposes?(other = 0)
+      other = other.index if other.respond_to?(:index)
+      (index & 1) != (other.to_i & 1)
+    end
     def __real__;           @arnet_b; end
     def is_a?(k);           @arnet_b.is_a?(k); end
     def kind_of?(k);        @arnet_b.kind_of?(k); end
@@ -251,6 +265,43 @@ if defined?(Battle::Scene::Animation::PokeballPlayerSendOut)
         arnet_orig_psendout_cp
       ensure
         @sprites[pk], @sprites[tk] = @sprites[tk], @sprites[pk]
+      end
+    end
+  end
+end
+
+#--- 7c) Gimmick transformation cinematics (Mega / Primal / Dynamax / Terastal /
+# Z-Move / Ultra Burst). Each of these full-screen overlays builds its OWN sprites
+# and anchors the transforming Pokémon at a FIXED screen spot via
+# `Battle::Scene.pbBattlerPosition(1, 1)` (dxSetPokemon / dxSetPokemonWithOutline),
+# intended to be dead-center regardless of who transforms. But [012] overrides that
+# class method to flip seats for the guest, so on the GUEST the anchor slides to the
+# opposite side and the whole cinematic appears off-center (host is fine). The rest
+# of the cinematic is drawn at center_x already. Fix: SUPPRESS the seat flip for the
+# duration of the cinematic's construction (its createProcesses, which computes the
+# anchor, runs inside initialize via super). With the flip suppressed the anchor is
+# canonical on both peers, so the cinematic renders identically — dead-center — for
+# host and guest. Display-only (never hashed); the flag is restored in an ensure so
+# nothing else is affected. ----------------------------------------------------
+ARNET_GIMMICK_ANIMS = %w[BattlerMegaEvolve BattlerPrimalReversion BattlerDynamax
+                         BattlerDynamaxWild BattlerTerastallize BattlerZMove
+                         BattlerUltraBurst].freeze
+if defined?(Battle::Scene::Animation)
+  ARNET_GIMMICK_ANIMS.each do |cname|
+    next unless Battle::Scene::Animation.const_defined?(cname)
+    klass = Battle::Scene::Animation.const_get(cname)
+    # Only wrap classes that define their own initialize (all of these do).
+    next unless klass.instance_method(:initialize).owner == klass
+    next if klass.method_defined?(:arnet_orig_gimmick_init) ||
+            klass.private_method_defined?(:arnet_orig_gimmick_init)
+    klass.send(:alias_method, :arnet_orig_gimmick_init, :initialize)
+    klass.send(:define_method, :initialize) do |*args, &blk|
+      prev = $arnet_suppress_flip
+      $arnet_suppress_flip = true
+      begin
+        arnet_orig_gimmick_init(*args, &blk)
+      ensure
+        $arnet_suppress_flip = prev
       end
     end
   end

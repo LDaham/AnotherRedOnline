@@ -81,6 +81,11 @@ class Battle
         arnet_clock[:bank][side] = 0
         arnet_clock[:out][side]  = true
       end
+      begin
+        File.open(ARNet.log_path("arnet_clock_#{@arnet_side}.log"), "a") { |f|
+          f.puts("[CMD t=#{@turnCount}] side=#{side} used=#{used.round(2)}s cap=#{@arnet_clock_cap.round(1)}s bank=#{arnet_clock[:bank][side].round(1)}s out=#{arnet_clock[:out][side]}")
+        }
+      rescue; end
       @arnet_clock_turn_start = nil
       arnet_clock_hud_close
     end
@@ -146,6 +151,11 @@ class Battle
   def arnet_clock_endcheck
     return unless arnet_clock_enabled?
     return if @decision != 0
+    begin
+      File.open(ARNet.log_path("arnet_clock_#{@arnet_side}.log"), "a") { |f|
+        f.puts("[EOR t=#{@turnCount}] bank0=#{arnet_clock[:bank][0].round(1)}s out0=#{arnet_clock[:out][0]} bank1=#{arnet_clock[:bank][1].round(1)}s out1=#{arnet_clock[:out][1]}")
+      }
+    rescue; end
     o0 = arnet_clock[:out][0]
     o1 = arnet_clock[:out][1]
     return unless o0 || o1

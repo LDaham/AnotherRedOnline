@@ -23,12 +23,12 @@ class Window_TextEntry
 end
 
 module ARNet
-  # 예외를 파일(arnet_err.txt, mkxp 쓰기 디렉터리=%APPDATA%\Pokemon Another Red\)에
-  # 남기고 화면에도 표시. 인게임 디버깅용 — 필드에서 크래시로 게임이 죽는 것을 방지.
+  # 예외를 파일(ARNet_Logs/arnet_err.txt, mkxp 쓰기 디렉터리 하위)에 남기고 화면에도
+  # 표시. 인게임 디버깅용 — 필드에서 크래시로 게임이 죽는 것을 방지.
   def self.log_exception(where, e)
     begin
       bt = (e.respond_to?(:backtrace) && e.backtrace) ? e.backtrace.join("\n") : "(no backtrace)"
-      File.open("arnet_err.txt", "ab") do |f|
+      File.open(ARNet.log_path("arnet_err.txt"), "ab") do |f|
         f.write("[#{where}] #{e.class}: #{e.message}\n#{bt}\n\n")
       end
     rescue Exception
