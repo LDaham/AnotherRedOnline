@@ -73,24 +73,31 @@ module ARNet
   def relearn_pokemon(pkmn)
     scene  = MoveRelearner_Scene.new
     screen = MoveRelearnerScreen.new(scene)
-    moves  = screen.pbGetRelearnableMoves(pkmn)
-    if moves.empty?
-      pbMessage(_INTL("\\j[{1},은,는] 배울 수 있는 기술이 없어요.", pkmn.name))
-      return
-    end
-    moves = arnet_sort_relearn_moves(moves)      # 타입 순으로 정렬해 표시
-    scene.pbStartScene(pkmn, moves)
+    taught_any = false
+    # 기술을 하나 배운 뒤에는 포켓몬 선택창으로 돌아가지 않고, 같은 포켓몬의 기술
+    # 목록을 새로 조회(방금 배운 기술은 hasMove?로 자동 제외)해 다시 보여준다. 목록
+    # 선택창에서 B(취소)를 눌러야만 포켓몬 선택창으로 나간다.
     loop do
-      move = scene.pbChooseMove
-      if move.nil?
-        scene.pbEndScene                             # 취소 → 안내 없이 종료
+      moves = arnet_sort_relearn_moves(screen.pbGetRelearnableMoves(pkmn))
+      if moves.empty?
+        # 처음부터 배울 게 없을 때만 안내. 이미 가르쳐서 목록이 비었으면 조용히 복귀.
+        pbMessage(_INTL("\\j[{1},은,는] 배울 수 있는 기술이 없어요.", pkmn.name)) unless taught_any
         return
       end
-      if relearn_quick_learn(pkmn, move)
-        scene.pbEndScene
-        return
+      scene.pbStartScene(pkmn, moves)
+      loop do
+        move = scene.pbChooseMove
+        if move.nil?
+          scene.pbEndScene                           # B(취소) → 포켓몬 선택창으로
+          return
+        end
+        if relearn_quick_learn(pkmn, move)
+          scene.pbEndScene
+          taught_any = true
+          break                                      # 같은 포켓몬 목록을 갱신해 재표시
+        end
+        # 삭제 창 취소 등으로 미학습 → 현재 목록 유지, 다시 선택 가능
       end
-      # 삭제 창 취소 등으로 미학습 → 목록 유지, 다시 선택 가능
     end
   end
 end
