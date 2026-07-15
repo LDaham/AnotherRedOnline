@@ -18,6 +18,16 @@ as long as their base game is the same build we baked against (PWT_250821).
 Usage:
     python tools/build_release.py            # re-bake, then zip (recommended)
     python tools/build_release.py --no-bake  # zip whatever is already baked
+    python tools/build_release.py --no-zip   # fully apply to the TEST game, no zip
+
+--no-zip is the "update my local test game for in-game testing" path: it runs the
+exact same in-place steps (bake + map patch + common-event patch) that a release
+build does, writing them straight into the test version's Data folder, but stops
+before zipping. Run this — NOT a bare `plugin_baker.py bake` — whenever a change
+touches maps or common events (e.g. the Pokémon-Center service menus), because a
+bare bake only updates PluginScripts.rxdata and leaves the maps stale. Then launch
+    tmp/Pokemon Another Red 테스트 버전/Game.exe
+to test.
 
 The zip lands in dist/ as AnotherRedOnline_v<meta Version>.zip. Bump the Version
 in plugin/AnotherRedOnline/meta.txt AND the MOD_VERSION in "[001] ..." before a
@@ -74,6 +84,15 @@ def main():
     # Remove the "공중날기 택시" contact's obsolete "mash B to exit" message from
     # CommonEvents.rxdata (plugin [024] now auto-closes the menus). Idempotent.
     patch_common_events.apply(DATA, write=True)
+
+    # --no-zip: everything above has already been written IN PLACE into the test
+    # version's Data folder (PluginScripts + maps + common events), so the local
+    # test game is now fully up to date. Skip packaging. This is the command to run
+    # before launching tmp/Pokemon Another Red 테스트 버전/Game.exe for testing.
+    if "--no-zip" in sys.argv:
+        print("test game updated in place (bake + %d map branch(es) + common events); "
+              "no zip built. Launch the test Game.exe to test." % _branches)
+        return
 
     ver = read_version()
     os.makedirs(OUTDIR, exist_ok=True)

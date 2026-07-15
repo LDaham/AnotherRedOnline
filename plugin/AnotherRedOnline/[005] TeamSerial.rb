@@ -279,8 +279,11 @@ module ARNet
       (h["moves"] || []).each do |m|
         next unless m.is_a?(Hash) && m["id"] && GameData::Move.exists?(m["id"].to_sym)
         mo = Pokemon::Move.new(m["id"].to_sym)
-        mo.ppup = (m["ppup"] || 0).to_i.clamp(0, 3)
-        mo.pp   = mo.total_pp     # battles begin at full PP
+        # 온라인 대전: 모든 기술에 포인트맥스를 쓴 것처럼 PP Up을 최대(3)로 강제한다.
+        # 양 피어가 양 팀을 이 경로로 동일 재구성하므로 대칭·결정론 안전, 세이브 무관
+        # (전송된 ppup 값은 무시). battles begin at full PP.
+        mo.ppup = 3
+        mo.pp   = mo.total_pp
         mv << mo
       end
       pkmn.moves = mv unless mv.empty?

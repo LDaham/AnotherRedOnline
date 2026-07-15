@@ -28,6 +28,12 @@ CANCEL     = "취소"
 NEW_LABEL  = "노력치 조정"
 SERVICE    = "pbEVTrainingService"
 
+# 무브 리마인더("기술 배우기") 분기 간소화: 해당 When 분기 본문을 통째로 지우고
+# pbMoveRelearnService([027]) 한 줄 호출로 대체 → 초기 확인/안내/가르치기 확인 등
+# 모든 프롬프트 제거. 라벨은 게임 상태에 따라 두 가지로 나타난다.
+RELEARN_LABELS  = ("기술 떠올리기", "기술 배우기")
+RELEARN_SERVICE = "pbMoveRelearnService"
+
 
 def mkstr(text):
     return rm.RString(text.encode("utf-8"), [])
@@ -122,6 +128,50 @@ def patch_list(lst):
     return modified
 
 
+def _relearn_already(lst, when_i, base):
+    """When-branch body already replaced by our single Script call?"""
+    j = when_i + 1
+    if j < len(lst):
+        c = lst[j]
+        if c.get("@code") == 355 and c.get("@indent") == base + 1:
+            p = c.get("@parameters") or []
+            if p and isinstance(p[0], rm.RString) and p[0].str() == RELEARN_SERVICE:
+                return True
+    return False
+
+
+def patch_relearn_list(lst):
+    """Replace the move-reminder When branch body/bodies with one Script call to
+    pbMoveRelearnService. Only acts inside a list that holds the service menu.
+    Idempotent. Returns True if modified."""
+    if not any(_choices_of(c) is not None for c in lst):
+        return False
+    modified = False
+    i = 0
+    while i < len(lst):
+        c = lst[i]
+        if c.get("@code") == 402:
+            p = c.get("@parameters") or []
+            label = p[1].str() if len(p) > 1 and isinstance(p[1], rm.RString) else None
+            base = c.get("@indent")
+            if label in RELEARN_LABELS and not _relearn_already(lst, i, base):
+                # body = commands strictly inside this When (indent > base), up to
+                # the next When/WhenCancel/EndChoices at this indent.
+                end = i + 1
+                while end < len(lst) and lst[end].get("@indent") > base:
+                    end += 1
+                block = [
+                    mkcmd(355, base + 1, [mkstr(RELEARN_SERVICE)]),
+                    mkcmd(0,   base + 1, []),
+                ]
+                lst[i + 1:end] = block
+                modified = True
+                i = i + 1 + len(block)
+                continue
+        i += 1
+    return modified
+
+
 def patch_map_node(node):
     if not isinstance(node, rm.RObject):   # e.g. MapInfos.rxdata is a Hash
         return 0
@@ -132,7 +182,11 @@ def patch_map_node(node):
     for _eid, ev in events.pairs:
         for pg in ev.get("@pages") or []:
             lst = pg.get("@list")
-            if lst and patch_list(lst):
+            if not lst:
+                continue
+            m1 = patch_list(lst)            # "노력치 조정" 주입
+            m2 = patch_relearn_list(lst)    # "기술 배우기" 분기 간소화
+            if m1 or m2:
                 n += 1
     return n
 

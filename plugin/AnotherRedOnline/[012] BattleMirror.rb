@@ -267,6 +267,36 @@ if defined?(Battle::Scene::Animation::PokeballPlayerSendOut)
         @sprites[pk], @sprites[tk] = @sprites[tk], @sprites[pk]
       end
     end
+    #--- 7b-2) Force the ball-throw at online battle start. Following Pokémon EX
+    # (plugin 22) replaces PokeballPlayerSendOut#initialize: when a follower is
+    # active in the overworld AND startBattle AND battler.index == 0 (SLIDE_INTO_
+    # BATTLE), it runs `createFollowerProcesses` (a ball-less left→right slide-in)
+    # instead of `createProcesses`. In online PvP the HOST's own lead IS index 0,
+    # so with any overworld follower the host saw the slide-in and no ball throw
+    # (the guest's own lead is index 1, so it was unaffected and already threw).
+    # There is no follower in a PvP battle, so replicate plugin 22's ELSE path
+    # (its own ivar setup + createProcesses) to guarantee the normal throw on
+    # both peers. Presentation-only (no sim state), so per-peer divergence is OK.
+    unless method_defined?(:arnet_orig_psendout_init)
+      alias_method :arnet_orig_psendout_init, :initialize
+    end
+    def initialize(*a)
+      return arnet_orig_psendout_init(*a) unless $arnet_online_intro
+      sprites, viewport, idxTrainer, battler, startBattle, idxOrder = *a
+      @idxTrainer     = idxTrainer
+      @battler        = battler
+      @showingTrainer = startBattle
+      @idxOrder       = idxOrder || 0
+      @trainer        = @battler.battle.pbGetOwnerFromBattlerIndex(@battler.index)
+      @shadowVisible  = sprites["shadow_#{battler.index}"].visible
+      @sprites        = sprites
+      @viewport       = viewport
+      @pictureEx      = []
+      @pictureSprites = []
+      @tempSprites    = []
+      @animDone       = false
+      createProcesses
+    end
   end
 end
 

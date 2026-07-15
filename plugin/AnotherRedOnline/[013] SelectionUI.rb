@@ -289,7 +289,7 @@ module ARNet
     # Returns the picks array, or :aborted if the peer dropped/aborted.
     def run(session = nil)
       @waiting = false
-      @sel_deadline ||= System.uptime + @secs   # set once; survives re-selection
+      @sel_deadline ||= ARNet.clock_now + @secs   # set once; survives re-selection
       @last_remain = nil
       result = nil
       loop do
@@ -297,7 +297,7 @@ module ARNet
           session.update
           return :aborted if session.phase == :closed || session.phase == :error
         end
-        remain = (@sel_deadline - System.uptime).ceil
+        remain = (@sel_deadline - ARNet.clock_now).ceil
         remain = 0 if remain < 0
         if remain <= 0
           i = 0
@@ -396,7 +396,7 @@ module ARNet
     # 계속 흘러 상대가 얼마나 남았는지 보여준다.
     def _wait_remain
       return @secs unless @sel_deadline
-      r = (@sel_deadline - System.uptime).ceil
+      r = (@sel_deadline - ARNet.clock_now).ceil
       r < 0 ? 0 : r
     end
 

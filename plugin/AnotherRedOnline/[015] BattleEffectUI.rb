@@ -6,11 +6,13 @@
 # (the user asked for them in both).
 #
 #   (1) Move type-effectiveness hint
-#         Singles: just the effectiveness SYMBOL, in each move box's top-right
-#                  corner (no box, no phrase — barely intrudes on the menu).
-#         Doubles: a tag (symbol + phrase) above each candidate target's data box
-#                  during target selection (the Fight menu can't know which foe
-#                  you'll pick, so the hint moves there — 더블배틀 효과 표시.png).
+#         Fight menu (both formats): the effectiveness SYMBOL in each move box's
+#                  top-right corner (no box, no phrase — barely intrudes). In
+#                  doubles the symbol shows the STRONGEST matchup among the live
+#                  foes, since the Fight menu can't know which target you'll pick.
+#         Doubles target select: additionally a tag (symbol + phrase) above each
+#                  candidate target's data box so you see the per-foe value there
+#                  too (더블배틀 효과 표시.png).
 #       Only shown for damaging moves that can hit a foe. Status moves (weather,
 #       self-buffs, stat moves, …) show nothing, per spec.
 #
@@ -96,6 +98,22 @@ module ARNet
     raw = (move.pbCalcTypeMod(mtype, user, target) rescue nil)
     return nil if raw.nil?
     raw.to_f / norm
+  end
+
+  # Best (highest) effectiveness tier of `move` (as `user`) against any live foe
+  # in `foes`. In doubles the Fight menu can't know which target you'll pick, so
+  # the move-box symbol shows the STRONGEST matchup among the current opponents
+  # (a single foe in singles). nil when no foe yields a hint (status move, all
+  # foes fainted, error).
+  def self.fx_best_effect_tier(user, move, foes)
+    best = nil
+    Array(foes).each do |foe|
+      next if foe.nil? || (foe.fainted? rescue true)
+      m = fx_move_mult(user, move, foe)
+      next if m.nil?
+      best = m if best.nil? || m > best
+    end
+    fx_effect_tier(best)
   end
 
   # Turn a flat [stat, amount, stat, amount, ...] array (as stored on multi-stat
@@ -317,9 +335,13 @@ class Battle::Scene::FightMenu < Battle::Scene::MenuBase
   def arnet_fx_draw_move_effects
     return unless @battler && @overlay && @overlay.bitmap
     battle = (@battler.battle rescue nil)
-    return unless battle && (battle.singleBattle? rescue false)
-    foe = (@battler.pbDirectOpposing(true) rescue nil)
-    return if foe.nil? || foe.fainted?
+    return unless battle
+    # Singles = the one foe; doubles = both live opponents (symbol shows the
+    # strongest matchup, since the Fight menu can't know which target you pick).
+    foes = (battle.allOtherSideBattlers(@battler.index) rescue nil)
+    foes = [(@battler.pbDirectOpposing(true) rescue nil)] if foes.nil? || foes.empty?
+    foes = foes.reject { |f| f.nil? || (f.fainted? rescue true) }
+    return if foes.empty?
     moves = @battler.moves
     bmp = @overlay.bitmap
     old_size = bmp.font.size
@@ -330,7 +352,7 @@ class Battle::Scene::FightMenu < Battle::Scene::MenuBase
       next if !@visibility["button_#{i}"]
       move = moves[i]
       next if move.nil? || move.id.nil?
-      tier = ARNet.fx_effect_tier(ARNet.fx_move_mult(@battler, move, foe))
+      tier = ARNet.fx_best_effect_tier(@battler, move, foes)
       next if tier.nil?
       sym, _phrase, col = tier
       # Symbol only, right-aligned to the move box's top-right corner (no box).

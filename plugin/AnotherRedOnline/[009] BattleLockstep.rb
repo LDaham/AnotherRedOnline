@@ -73,6 +73,11 @@ class Battle
       i += 1
     end
 
+    # Bill MY decision time now — the instant local choices are locked in, BEFORE
+    # awaiting the peer — so only my own thinking counts toward the 7-min bank,
+    # never the opponent's wait. (Idempotent; the [014] ensure won't double-charge.)
+    arnet_clock_charge if respond_to?(:arnet_clock_charge)
+
     # 2) Exchange choices with the peer
     unless arnet_exchange_choices
       @command_phase = false; return

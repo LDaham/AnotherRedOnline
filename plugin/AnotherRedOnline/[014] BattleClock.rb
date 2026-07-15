@@ -66,29 +66,45 @@ class Battle
   alias_method :arnet_clock_orig_command_phase, :pbCommandPhase
   def pbCommandPhase
     return arnet_clock_orig_command_phase unless arnet_clock_enabled?
-    @arnet_clock_turn_start = System.uptime
+    @arnet_clock_turn_start = ARNet.clock_now
+    @arnet_clock_committed  = false
     @arnet_clock_cap = [@arnet_ruleset["time_turn"].to_f, arnet_clock[:bank][@arnet_side]].min
     arnet_clock_hud_open
     begin
       arnet_clock_orig_command_phase
     ensure
-      used = System.uptime - @arnet_clock_turn_start
-      used = @arnet_clock_cap if used > @arnet_clock_cap
-      used = 0 if used < 0
-      side = @arnet_side
-      arnet_clock[:bank][side] -= used
-      if arnet_clock[:bank][side] <= 0
-        arnet_clock[:bank][side] = 0
-        arnet_clock[:out][side]  = true
-      end
-      begin
-        File.open(ARNet.log_path("arnet_clock_#{@arnet_side}.log"), "a") { |f|
-          f.puts("[CMD t=#{@turnCount}] side=#{side} used=#{used.round(2)}s cap=#{@arnet_clock_cap.round(1)}s bank=#{arnet_clock[:bank][side].round(1)}s out=#{arnet_clock[:out][side]}")
-        }
-      rescue; end
+      arnet_clock_charge   # fallback: charge if [009] returned early (forfeit/abort)
       @arnet_clock_turn_start = nil
       arnet_clock_hud_close
     end
+  end
+
+  # Bill THIS player's bank for the current turn's DECISION time ONLY
+  # (turn_start -> now). [009] calls this the instant local choices are locked in
+  # — BEFORE awaiting the peer — so the opponent's thinking time is never billed
+  # to us (a slow opponent must not drain my 7-min bank). Idempotent via
+  # @arnet_clock_committed: the command-phase ensure calls it again only as a
+  # fallback for early-return/abort paths, where the flag makes it a no-op.
+  # Animation time is excluded inherently — the clock runs only in the command
+  # phase, never during the attack/animation phase.
+  def arnet_clock_charge
+    return if @arnet_clock_committed
+    return unless arnet_clock_enabled? && @arnet_clock_turn_start
+    @arnet_clock_committed = true
+    used = ARNet.clock_now - @arnet_clock_turn_start
+    used = @arnet_clock_cap if used > @arnet_clock_cap
+    used = 0 if used < 0
+    side = @arnet_side
+    arnet_clock[:bank][side] -= used
+    if arnet_clock[:bank][side] <= 0
+      arnet_clock[:bank][side] = 0
+      arnet_clock[:out][side]  = true
+    end
+    begin
+      File.open(ARNet.log_path("arnet_clock_#{@arnet_side}.log"), "a") { |f|
+        f.puts("[CMD t=#{@turnCount}] side=#{side} used=#{used.round(2)}s cap=#{@arnet_clock_cap.round(1)}s bank=#{arnet_clock[:bank][side].round(1)}s out=#{arnet_clock[:out][side]}")
+      }
+    rescue; end
   end
 
   # Per-battler menu wrapper: the shared clock is already running (started by the
@@ -114,7 +130,7 @@ class Battle
     arnet_clock_orig_menu_poll   # forfeit/leave check first (may raise PeerGone)
     return unless arnet_clock_enabled? && @arnet_in_menu && @arnet_clock_turn_start
     arnet_clock_hud_update
-    raise ARNet::ClockExpired if (System.uptime - @arnet_clock_turn_start) >= @arnet_clock_cap
+    raise ARNet::ClockExpired if (ARNet.clock_now - @arnet_clock_turn_start) >= @arnet_clock_cap
   end
 
   # Auto-pick on timeout: first usable move (top-left preference), else Struggle.
@@ -219,7 +235,7 @@ class Battle
 
   def arnet_clock_hud_update
     return unless @arnet_clock_hud && @arnet_clock_turn_start
-    turn_left = (@arnet_clock_cap - (System.uptime - @arnet_clock_turn_start)).ceil
+    turn_left = (@arnet_clock_cap - (ARNet.clock_now - @arnet_clock_turn_start)).ceil
     turn_left = 0 if turn_left < 0
     bmp = @arnet_clock_hud.bitmap
     bmp.clear
@@ -256,5 +272,192 @@ class Battle
     s = secs.to_i
     s = 0 if s < 0
     sprintf("%d:%02d", s / 60, s % 60)
+  end
+
+  #===========================================================================
+  # Replacement-selection clock (fainted / U-turn / Baton Pass / Eject)
+  #===========================================================================
+  # A Pokémon fainting or switching mid-battle opens the party screen OUTSIDE
+  # the command phase, so the command-phase clock above never fires there. We
+  # give that selection the SAME chess-clock rules as move selection:
+  #   cap  = min(time_turn, remaining bank)   (45s or whatever's left)
+  #   bill = the actual seconds spent, deducted from THIS side's bank
+  #   cap hit -> auto-pick the first legal switch-in (deterministic; broadcast)
+  #
+  # DETERMINISM: the picked party index is broadcast via send_switch (see [009]),
+  # so HOW the local player chooses (real pick, timeout auto-pick) never affects
+  # the shared sim. The bank is billed locally per side.
+  #
+  # WHY WE DON'T SET out[] HERE (subtle): out[] is judged at THIS same EOR
+  # (arnet_clock_endcheck runs right after pbEORSwitch), but the switch message
+  # carries NO clock payload — the peer wouldn't learn our bank drained until the
+  # next choices exchange. Flagging out now would desync @decision. Instead a
+  # drained bank forces a 0-cap on our NEXT command phase, where the loss is
+  # flagged and transmitted normally (the peer's bank value is never read for any
+  # decision — only out[], which both peers then agree on). So the loss lands one
+  # turn later, but consistently on both peers. See arnet_clock_charge_replacement.
+  if method_defined?(:arnet_local_pick_replacement)
+    alias_method :arnet_clock_orig_local_pick_replacement, :arnet_local_pick_replacement
+    def arnet_local_pick_replacement(idxBattler, checkLaxOnly = false, canCancel = false)
+      return arnet_clock_orig_local_pick_replacement(idxBattler, checkLaxOnly, canCancel) unless arnet_clock_enabled?
+      @arnet_clock_turn_start = ARNet.clock_now
+      @arnet_clock_committed  = false
+      @arnet_clock_cap = [@arnet_ruleset["time_turn"].to_f, arnet_clock[:bank][@arnet_side]].min
+      @arnet_repl_clock_on = true
+      arnet_clock_hud_open
+      begin
+        arnet_clock_orig_local_pick_replacement(idxBattler, checkLaxOnly, canCancel)
+      ensure
+        arnet_clock_charge_replacement
+        @arnet_clock_turn_start = nil
+        @arnet_repl_clock_on = false
+        arnet_clock_hud_close
+      end
+    end
+  end
+
+  # Like arnet_clock_charge but for a replacement window: deduct the elapsed time
+  # from this side's bank, but do NOT set out[] (see the note above). A bank at 0
+  # is enforced as a loss on the next command phase, not here.
+  def arnet_clock_charge_replacement
+    return if @arnet_clock_committed
+    return unless arnet_clock_enabled? && @arnet_clock_turn_start
+    @arnet_clock_committed = true
+    used = ARNet.clock_now - @arnet_clock_turn_start
+    used = @arnet_clock_cap if used > @arnet_clock_cap
+    used = 0 if used < 0
+    side = @arnet_side
+    arnet_clock[:bank][side] -= used
+    arnet_clock[:bank][side] = 0 if arnet_clock[:bank][side] < 0
+    begin
+      File.open(ARNet.log_path("arnet_clock_#{@arnet_side}.log"), "a") { |f|
+        f.puts("[REPL t=#{@turnCount}] side=#{side} used=#{used.round(2)}s cap=#{@arnet_clock_cap.round(1)}s bank=#{arnet_clock[:bank][side].round(1)}s")
+      }
+    rescue; end
+  end
+
+  # True while a replacement party screen is open under the clock — the party
+  # scene's update hook (below) uses this to know it should poll the deadline.
+  def arnet_repl_clock_active?
+    @arnet_repl_clock_on ? true : false
+  end
+
+  def arnet_repl_clock_expired?
+    return false unless @arnet_clock_turn_start
+    (ARNet.clock_now - @arnet_clock_turn_start) >= @arnet_clock_cap
+  end
+
+  # On timeout: the DISPLAY-party index (into pbPlayerDisplayParty) of the first
+  # legal switch-in. Mirrors the scene's display->team index mapping and validates
+  # with pbCanSwitchIn? (same predicate the party screen's yield block enforces),
+  # so the auto-picked index is always accepted (no re-select loop).
+  def arnet_repl_autopick_display(idxBattler, modParty)
+    partyPos = pbPartyOrder(idxBattler)
+    partyStart, _e = pbTeamIndexRangeFromBattlerIndex(idxBattler)
+    modParty.each_with_index do |pkmn, dispIdx|
+      next unless pkmn && pkmn.able?
+      teamIdx = -1
+      partyPos.each_with_index do |pos, i|
+        next if pos != dispIdx + partyStart
+        teamIdx = i
+        break
+      end
+      next if teamIdx < 0
+      return dispIdx if pbCanSwitchIn?(idxBattler, teamIdx)
+    end
+    0
+  end
+end
+
+#=============================================================================
+# Party screen with a replacement deadline (online only)
+#=============================================================================
+# Generation 9 Pack overwrites Battle::Scene#pbPartyScreen wholesale; [014] loads
+# after it (baked 30th), so we wrap that version. Only online replacement windows
+# (arnet_repl_clock_active?) get the timeout path; everything else — including
+# Revival Blessing's mode-2 party screen — delegates to the original untouched.
+#
+# The deadline is enforced by PokemonParty_Scene#update (below) raising
+# ClockExpired; we catch it here, auto-pick a legal switch-in, confirm it, and
+# leave the loop so pbEndScene + pbFadeInAndShow still run (a clean exit — no
+# leaked party scene, no battle stuck faded out).
+class Battle::Scene
+  alias_method :arnet_replclock_orig_pbPartyScreen, :pbPartyScreen
+  def pbPartyScreen(idxBattler, canCancel = false, mode = 0)
+    unless @battle.respond_to?(:arnet_repl_clock_active?) && @battle.arnet_repl_clock_active?
+      return arnet_replclock_orig_pbPartyScreen(idxBattler, canCancel, mode)
+    end
+    visibleSprites = pbFadeOutAndHide(@sprites)
+    partyPos = @battle.pbPartyOrder(idxBattler)
+    partyStart, _partyEnd = @battle.pbTeamIndexRangeFromBattlerIndex(idxBattler)
+    modParty = @battle.pbPlayerDisplayParty(idxBattler)
+    scene = PokemonParty_Scene.new
+    switchScreen = PokemonPartyScreen.new(scene, modParty)
+    msg = _INTL("Choose a Pokémon.")
+    switchScreen.pbStartScene(msg, @battle.pbNumPositions(0, 0))
+    scene.arnet_repl_clock = @battle   # let PokemonParty_Scene#update poll the deadline
+    begin
+      loop do
+        scene.pbSetHelpText(msg)
+        begin
+          idxParty = switchScreen.pbChoosePokemon
+          if idxParty < 0
+            next if !canCancel
+            break
+          end
+          cmdSwitch  = -1
+          cmdSummary = -1
+          commands = []
+          commands[cmdSwitch  = commands.length] = _INTL("Switch In") if modParty[idxParty].able? &&
+                                                                         (@battle.canSwitch || !canCancel)
+          commands[cmdSummary = commands.length] = _INTL("Summary")
+          commands[commands.length]              = _INTL("Cancel")
+          command = scene.pbShowCommands(_INTL("Do what with {1}?", modParty[idxParty].name), commands)
+          if cmdSwitch >= 0 && command == cmdSwitch
+            idxPartyRet = -1
+            partyPos.each_with_index do |pos, i|
+              next if pos != idxParty + partyStart
+              idxPartyRet = i
+              break
+            end
+            break if yield idxPartyRet, switchScreen
+          elsif cmdSummary >= 0 && command == cmdSummary
+            scene.pbSummary(idxParty, true)
+          end
+        rescue ARNet::ClockExpired
+          # Time (min(45s, bank)) ran out: auto-pick the first legal switch-in and
+          # confirm it, then leave the party screen (the ensure below runs the
+          # normal close/fade). The index is broadcast, so both peers stay in sync.
+          dispIdx = @battle.arnet_repl_autopick_display(idxBattler, modParty)
+          idxPartyRet = -1
+          partyPos.each_with_index do |pos, i|
+            next if pos != dispIdx + partyStart
+            idxPartyRet = i
+            break
+          end
+          yield idxPartyRet, switchScreen
+          break
+        end
+      end
+    ensure
+      scene.arnet_repl_clock = nil rescue nil
+      switchScreen.pbEndScene
+      pbFadeInAndShow(@sprites, visibleSprites)
+    end
+  end
+end
+
+# The party selection loop calls self.update every frame (see UI_Party.rb
+# pbChoosePokemon). When a replacement clock is attached, tick its HUD and raise
+# ClockExpired at the deadline — caught by the pbPartyScreen wrapper above.
+class PokemonParty_Scene
+  attr_accessor :arnet_repl_clock
+  alias_method :arnet_replclock_orig_update, :update
+  def update
+    arnet_replclock_orig_update
+    b = @arnet_repl_clock
+    return unless b
+    b.arnet_clock_hud_update if b.respond_to?(:arnet_clock_hud_update)
+    raise ARNet::ClockExpired if b.arnet_repl_clock_expired?
   end
 end
